@@ -37,6 +37,7 @@
 
 ### 后端设置
 # docker 中下载 mysql
+```bash
 docker pull mysql
 
 #启动
@@ -48,7 +49,7 @@ docker exec -it mysql bash
 #登录mysql
 mysql -u root -p
 ALTER USER 'root'@'localhost' IDENTIFIED BY 'Lzslov123!';（你的密码）
-
+```
 ```bash
 # 创建并激活环境
 conda create -n my_chat python=3.10
