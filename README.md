@@ -49,6 +49,27 @@ docker exec -it mysql bash
 #登录mysql
 mysql -u root -p
 ALTER USER 'root'@'localhost' IDENTIFIED BY 'Lzslov123!';（你的密码）
+#建数据库
+CREATE DATABASE IF NOT EXISTS user_management;
+USE user_management;
+
+CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL UNIQUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE
+);
+#插入
+INSERT INTO users (username, password, email, created_at, is_active) VALUES
+('alice_jan', 'pass123', 'alice@example.com', '2025-01-15 10:30:00', TRUE),
+('bob_feb', 'secret456', 'bob@example.com', '2025-02-10 14:22:00', TRUE),
+('charlie_mar', 'mypwd789', 'charlie@example.com', '2025-03-05 09:10:00', FALSE),
+('diana_apr', 'pwd321', 'diana@example.com', '2025-04-01 18:45:00', TRUE),
+('edward_may', 'abc987', 'edward@example.com', '2025-05-03 11:11:00', TRUE);
+#查看
+SELECT * FROM users;
 ```
 ```bash
 # 创建并激活环境
