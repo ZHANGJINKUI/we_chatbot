@@ -36,6 +36,18 @@
 - Conda (可选)
 
 ### 后端设置
+# docker 中下载 mysql
+docker pull mysql
+
+#启动
+docker run --name mysql -p 3306:3306 -e MYSQL_ROOT_PASSWORD=Lzslov123! -d mysql （你的密码）
+
+#进入容器
+docker exec -it mysql bash
+
+#登录mysql
+mysql -u root -p
+ALTER USER 'root'@'localhost' IDENTIFIED BY 'Lzslov123!';（你的密码）
 
 ```bash
 # 创建并激活环境
