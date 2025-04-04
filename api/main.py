@@ -6,20 +6,24 @@ import tempfile
 import sys
 import shutil
 from pydantic import BaseModel
-
-# 添加当前目录到系统路径
-current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, current_dir)
-
+from admin.auth.routes import router as auth_router
+from admin.database import Base, engine
 # 导入DocProcessor和相关组件
 from my_agent.utils.shared.doc_processor import DocProcessor
 from my_agent.utils.shared.intent_classifier import IntentClassifier
 from langchain_openai import ChatOpenAI
 import os
 from dotenv import load_dotenv
+# 添加当前目录到系统路径
+current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, current_dir)
 
 app = FastAPI(title="文档处理API")
-
+Base.metadata.create_all(bind=engine)
+app.include_router(auth_router)
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the User Management System"}
 # 配置CORS
 app.add_middleware(
     CORSMiddleware,
