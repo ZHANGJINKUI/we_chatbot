@@ -1,1 +1,96 @@
- 
+{
+  "service": {
+    "name": "CSC Spelling Correction Service",
+    "version": "1.0.0",
+    "description": "提供拼写和语法纠错服务，基于MCP协议",
+    "provider": {
+      "name": "Simple CSC Team",
+      "contact": "support@example.com"
+    },
+    "host": "localhost",
+    "port": 8765,
+    "timeout": 30,
+    "retry": {
+      "max_attempts": 3,
+      "backoff_factor": 1.5
+    }
+  },
+  "tools": [
+    {
+      "name": "csc",
+      "description": "拼写纠错服务，分析并修正文本中的拼写和语法错误",
+      "parameters": {
+        "text": {
+          "type": "string",
+          "description": "需要进行拼写纠错的文本内容",
+          "required": true
+        }
+      },
+      "returns": {
+        "text": {
+          "type": "string",
+          "description": "纠错后的文本"
+        },
+        "modified": {
+          "type": "boolean",
+          "description": "是否对原文进行了修改"
+        },
+        "changes": {
+          "type": "string",
+          "description": "修改的详细说明"
+        }
+      }
+    },
+    {
+      "name": "add",
+      "description": "简单的加法计算，用于测试MCP服务",
+      "parameters": {
+        "a": {
+          "type": "number",
+          "description": "第一个数字",
+          "required": true
+        },
+        "b": {
+          "type": "number",
+          "description": "第二个数字",
+          "required": true
+        }
+      },
+      "returns": {
+        "result": {
+          "type": "number",
+          "description": "计算结果"
+        }
+      }
+    }
+  ],
+  "execution": {
+    "command": "python simple-csc/csc_server.py",
+    "working_dir": "${root}",
+    "environment": {
+      "PYTHONPATH": "${root}"
+    }
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    "file": "logs/mcp_service.log"
+  },
+  "error_handling": {
+    "retry_on_codes": [500, 503],
+    "fail_fast": false,
+    "timeout_seconds": 30
+  },
+  "performance": {
+    "max_concurrent_requests": 10,
+    "rate_limit": {
+      "requests_per_minute": 100,
+      "burst": 20
+    }
+  },
+  "security": {
+    "authentication": "none",
+    "allowed_origins": ["*"],
+    "require_https": false
+  }
+} 
