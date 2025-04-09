@@ -1,6 +1,6 @@
 # 文档处理与智能问答系统
 
-基于FastAPI和Next.js构建的文档处理与智能问答系统，支持公文纠错、内容优化以及智能问答功能。
+基于FastAPI和Next.js构建的文档处理与智能问答系统，支持公文纠错、内容优化以及智能问答功能。集成MCP协议实现高效、可扩展的微服务架构。
 
 ## 功能特点
 
@@ -9,6 +9,9 @@
 - **智能问答**：基于大模型的聊天问答系统，能够解答文档内容相关问题
 - **多版本纠错**：提供多种纠错风格可选，包括标准格式、简明扼要和详细解释
 - **渐进式纠错**：支持分步骤纠错，包括格式、语法和表达优化
+- **MCP协议集成**：基于标准JSON-RPC的MCP协议实现服务间通信，提高系统可扩展性
+- **用户反馈机制**：支持用户对纠错结果进行反馈，系统可基于反馈优化结果
+- **性能对比分析**：支持MCP协议处理与纯大模型处理的性能对比分析
 
 ## 系统工作流程
 
@@ -19,13 +22,16 @@
 | **渐进式纠错** | 1. 选择纠错类型<br>2. 分步处理文档<br>3. 提供每步纠错建议<br>4. 指示下一步操作 | • API: /api/progressive-correction<br>• 步骤: format/grammar/expression<br>• 专门的纠错提示词 | • 纠错类型选择<br>• 步骤指示器<br>• 纠错解释与建议显示 |
 | **意图识别** | 1. 接收用户输入<br>2. 正则匹配意图模式<br>3. 返回意图类型<br>4. 特殊类型识别(历史纠错等) | • 正则表达式匹配<br>• 多模式分类<br>• IntentClassifier类的方法 | • 自动识别无需用户选择<br>• 根据用户自然语言推断意图 |
 | **文件管理** | 1. 上传文件处理<br>2. 临时文件存储<br>3. 结果文件生成<br>4. 提供下载 | • UploadFile处理<br>• tempfile模块<br>• FileResponse返回<br>• python-docx处理 | • 文件上传界面<br>• 下载按钮<br>• 处理状态指示 |
+| **MCP协议服务** | 1. 请求接收<br>2. JSON-RPC解析<br>3. 服务调用<br>4. 结果返回<br>5. 错误处理 | • 标准JSON-RPC<br>• CSC拼写纠错服务<br>• agent_tools.py调用<br>• 异步处理 | • 与前端无直接交互<br>• 通过API间接调用<br>• 性能对比分析显示 |
 
 ## 技术栈
 
-- **后端**：FastAPI + Python + LangChain
+- **后端**：FastAPI + Python + LangGraph
 - **前端**：Next.js + React + TurboRepo
 - **AI模型**：DeepSeek Chat 或其他大语言模型
 - **文档处理**：python-docx, docx2txt
+- **微服务通信**：MCP协议 (基于JSON-RPC标准)
+- **拼写纠错服务**：simple-csc (提供CSC服务)
 
 ## 安装与使用
 
@@ -83,8 +89,13 @@ pip install -r requirements.txt
 export DEEPSEEK_API_KEY=your_api_key
 export DEEPSEEK_API_BASE=your_api_base_url
 
+# 启动CSC服务
+cd simple-csc
+python csc_server.py
+
 # 启动后端服务
-python -m api.main
+cd ../api
+python main.py
 ```
 
 ### 前端设置
@@ -170,6 +181,21 @@ ModuleNotFoundError: No module named 'fastapi'
 3. 系统将自动进行处理，并显示纠错结果
 4. 查看原文与纠错对比，下载处理后的文档
 5. 可切换到"聊天问答"标签进行内容相关提问
+6. 对纠错结果不满意可点击"👎"按钮进行反馈，系统将重新纠错
+
+## MCP协议服务
+
+本项目实现了基于MCP协议的分布式服务架构，主要包括：
+
+1. **CSC拼写纠错服务**：提供高效的拼写和语法纠错功能
+2. **主服务与MCP客户端**：处理用户请求并协调多个MCP服务
+3. **JSON-RPC通信**：标准化的服务间通信方式
+
+MCP协议的集成使系统具有以下优势：
+- 松耦合的微服务架构
+- 标准化的接口定义
+- 服务的可独立扩展
+- 提高了纠错处理效率
 
 ## 许可证
 
