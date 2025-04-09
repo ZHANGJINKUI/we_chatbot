@@ -296,19 +296,26 @@ body {
   border-color: var(--primary-color);
 }
 
+/* 加载指示器样式 */
 .typing-indicator {
   display: flex;
-  align-items: center;
+  gap: 5px;
   justify-content: center;
-  gap: 3px;
+  align-items: center;
+  padding: 10px 20px;
+  background-color: #f3f4f6;
+  border-radius: 12px;
+  margin: 10px 0;
+  max-width: 100px;
 }
 
 .typing-indicator span {
   width: 8px;
   height: 8px;
-  background-color: #999;
+  background-color: #3b82f6;
   border-radius: 50%;
-  animation: typing 1.4s infinite ease-in-out both;
+  display: inline-block;
+  animation: bounce 1s infinite ease-in-out;
 }
 
 .typing-indicator span:nth-child(1) {
@@ -323,83 +330,125 @@ body {
   animation-delay: 0.4s;
 }
 
-@keyframes typing {
-  0%, 100% {
-    transform: scale(0.7);
-    opacity: 0.5;
+@keyframes bounce {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.4;
   }
-  50% {
+  40% {
     transform: scale(1);
     opacity: 1;
   }
 }
 
-/* 特殊模式标记样式 */
-.special-mode-tag {
+/* 反馈状态指示器 */
+.feedback-processing {
   display: flex;
   align-items: center;
-  margin-bottom: 15px;
+  gap: 10px;
   padding: 10px 15px;
-  border-radius: 20px;
+  background-color: #f0f9ff;
+  border-radius: 8px;
+  margin: 10px 0;
+  font-size: 14px;
+  color: #0369a1;
+}
+
+.feedback-processing .spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(59, 130, 246, 0.2);
+  border-radius: 50%;
+  border-top: 2px solid #3b82f6;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* 保留pulse动画定义但不使用它，以便未来可能需要 */
+@keyframes pulse {
+  0% { opacity: 0.7; }
+  50% { opacity: 1; }
+  100% { opacity: 0.7; }
+}
+
+/* 特殊模式标记样式 */
+.special-mode-tag {
+  margin-bottom: 12px;
+  padding: 10px 15px;
+  font-size: 14px;
   font-weight: bold;
-  color: white;
-  animation: fadeIn 0.5s ease-in-out;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-  width: fit-content;
-  flex-wrap: wrap;
-}
-
-.special-mode-tag.doc {
-  background: linear-gradient(135deg, #3498db, #2980b9);
-}
-
-.special-mode-tag.chat {
-  background: linear-gradient(135deg, #9b59b6, #8e44ad);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 8px;
+  position: relative;
 }
 
 .special-mode-tag .icon {
-  margin-right: 8px;
+  margin-right: 10px;
   font-size: 18px;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(-10px); }
-  to { opacity: 1; transform: translateY(0); }
+.special-mode-tag.doc {
+  background-color: #e0f2fe;
+  color: #0369a1;
+  border-left: 4px solid #0ea5e9;
 }
 
-/* 反馈按钮容器 */
+.special-mode-tag.chat {
+  background-color: #f0fdf4;
+  color: #166534;
+  border-left: 4px solid #16a34a;
+}
+
+.special-mode-tag.mcp {
+  background-color: #eff6ff;
+  color: #1e40af;
+  border-left: 4px solid #3b82f6;
+  border-right: 4px solid #3b82f6;
+  animation: pulse-border 2s infinite;
+}
+
+@keyframes pulse-border {
+  0% { border-color: #3b82f6; }
+  50% { border-color: #1d4ed8; }
+  100% { border-color: #3b82f6; }
+}
+
 .feedback-buttons {
   display: flex;
-  margin-left: 20px;
   gap: 8px;
+  margin-left: auto;
 }
 
-/* 反馈按钮样式 */
 .feedback-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 5px 10px;
-  border: none;
-  border-radius: 30px;
-  background-color: rgba(255, 255, 255, 0.2);
-  color: white;
-  font-size: 0.85rem;
+  background: none;
+  border: 1px solid currentColor;
+  padding: 4px 10px;
+  border-radius: 4px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  font-size: 12px;
+  transition: all 0.2s;
 }
 
-.feedback-btn:hover {
-  background-color: rgba(255, 255, 255, 0.3);
-  transform: translateY(-2px);
+.feedback-btn.positive {
+  color: #16a34a;
 }
 
 .feedback-btn.positive:hover {
-  background-color: rgba(46, 204, 113, 0.4);
+  background-color: #dcfce7;
+}
+
+.feedback-btn.negative {
+  color: #dc2626;
 }
 
 .feedback-btn.negative:hover {
-  background-color: rgba(231, 76, 60, 0.4);
+  background-color: #fee2e2;
 }
 
 /* 多版本纠错样式 */

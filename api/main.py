@@ -6,11 +6,22 @@ import tempfile
 import sys
 import shutil
 from pydantic import BaseModel
+<<<<<<< HEAD
 from admin.auth.routes import router as auth_router
 from admin.database import Base, engine
+=======
+import time
+import json
+
+# 添加当前目录到系统路径
+current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, current_dir)
+
+>>>>>>> 1a274f1 (Add MCP protocol integration with CSC service, improve frontend UI and error correction functionality)
 # 导入DocProcessor和相关组件
 from my_agent.utils.shared.doc_processor import DocProcessor
 from my_agent.utils.shared.intent_classifier import IntentClassifier
+from my_agent.utils.tools import SimpleMCPTool
 from langchain_openai import ChatOpenAI
 import os
 from dotenv import load_dotenv
@@ -38,11 +49,20 @@ TEMP_DIR = tempfile.gettempdir()
 
 # 加载环境变量和初始化模型
 load_dotenv()
-deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
-deepseek_base_url = os.getenv("DEEPSEEK_API_BASE")
+deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "")
+deepseek_base_url = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
+
+# 确保API密钥和基础URL不为空
+if not deepseek_api_key:
+    print("警告：DEEPSEEK_API_KEY环境变量未设置或为空")
+    
+# 设置环境变量供其他库使用
 os.environ["OPENAI_API_KEY"] = deepseek_api_key
 os.environ["OPENAI_API_BASE"] = deepseek_base_url
 llm = ChatOpenAI(model="deepseek-chat")
+
+# 初始化MCP工具
+csc_tool = SimpleMCPTool()
 
 # 定义聊天请求和响应模型
 class ChatRequest(BaseModel):
@@ -53,35 +73,101 @@ class ChatResponse(BaseModel):
     response: str
     chat_history: list
 
-# 定义渐进式纠错请求和响应模型
-class ProgressiveCorrectionRequest(BaseModel):
-    text: str
-    step: str = "format"  # format, grammar, expression
-
-class ProgressiveCorrectionResponse(BaseModel):
-    corrected_text: str
-    explanation: str
-    next_step: str = None
-
 def process_document(file_path):
     """处理文档内容"""
-    # 加载文档
+    print(f"处理文档: {file_path}")
     content = DocProcessor.load_doc(file_path)
     
-    # 调用纠错函数
-    system_prompt = "你是一个专业的公文纠错助手。请对以下内容进行公文格式和语法纠错，指出错误并给出修改建议。在回复的开头添加标记[公文纠错专用模式-文档处理]，以表明这是使用专门的纠错功能处理的。"
-    correction_messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": content}
-    ]
-    
-    print("Calling model for document correction...")
-    correction_response = llm.invoke(correction_messages)
-    print(f"Document correction response received")
+    # 使用MCP中的CSC进行初步拼写纠错
+    try:
+        print("使用MCP协议的CSC功能进行拼写纠错...")
+        start_time = time.time()
+        
+        # 使用langgraph中的工具调用CSC功能
+        correction_result = csc_tool.correct_text(content)
+        elapsed_time = time.time() - start_time
+        print(f"CSC调用耗时: {elapsed_time:.2f}秒")
+        
+        # 解析纠错结果
+        if "纠错后的文本" in correction_result and "主要修改" in correction_result:
+            # MCP工具返回的结果是字符串，需要解析
+            corrected_parts = correction_result.split("\n主要修改:")
+            corrected_content = corrected_parts[0].replace("纠错后的文本:", "").strip()
+            modifications = corrected_parts[1].strip() if len(corrected_parts) > 1 else ""
+            
+            if modifications and "文本未发现明显拼写错误" not in modifications:
+                print(f"CSC修正成功: {modifications}")
+                
+                # 构建回复内容 - 直接使用CSC的结果
+                response_content = f"""【MCP协议公文纠错专用模式已启用】
+
+修改后的文本：
+{corrected_content}
+
+主要修改：
+{modifications}
+"""
+            else:
+                print("CSC未发现需要修改的内容")
+                # 如果CSC未找到错误，使用大模型进行纠错
+                system_prompt = "你是一个专业的公文纠错助手。请对以下内容进行公文格式和语法纠错，指出错误并给出修改建议。在回复的开头添加标记[公文纠错专用模式-文档处理]，以表明这是使用专门的纠错功能处理的。"
+                correction_messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content}
+                ]
+                
+                print("调用大模型进行文档纠错...")
+                correction_response = llm.invoke(correction_messages)
+                
+                # 添加特定前缀
+                response_content = correction_response.content
+                if not response_content.startswith("[公文纠错专用模式") and not response_content.startswith("【公文纠错专用模式"):
+                    response_content = f"""【公文纠错专用模式-聊天纠错已启用】
+
+{response_content}
+"""
+        else:
+            # 处理无法解析的情况
+            print("CSC返回结果格式异常，使用大模型进行文档纠错...")
+            system_prompt = "你是一个专业的公文纠错助手。请对以下内容进行公文格式和语法纠错，指出错误并给出修改建议。在回复的开头添加标记[公文纠错专用模式-文档处理]，以表明这是使用专门的纠错功能处理的。"
+            correction_messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content}
+            ]
+            
+            correction_response = llm.invoke(correction_messages)
+            
+            # 添加特定前缀
+            response_content = correction_response.content
+            if not response_content.startswith("[公文纠错专用模式") and not response_content.startswith("【公文纠错专用模式"):
+                response_content = f"""【公文纠错专用模式-聊天纠错已启用】
+
+{response_content}
+"""
+    except Exception as e:
+        print(f"CSC纠错过程中出错: {e}")
+        
+        # 如果CSC出错，使用大模型进行纠错
+        system_prompt = "你是一个专业的公文纠错助手。请对以下内容进行公文格式和语法纠错，指出错误并给出修改建议。在回复的开头添加标记[公文纠错专用模式-文档处理]，以表明这是使用专门的纠错功能处理的。"
+        correction_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content}
+        ]
+        
+        print("调用大模型进行文档纠错...")
+        correction_response = llm.invoke(correction_messages)
+        
+        # 添加特定前缀
+        response_content = correction_response.content
+        if not response_content.startswith("[公文纠错专用模式") and not response_content.startswith("【公文纠错专用模式"):
+            response_content = f"""【公文纠错专用模式-聊天纠错已启用】
+
+{response_content}
+"""
     
     return {
         "original_content": content,
-        "corrected_content": correction_response.content
+        "corrected_content": response_content
     }
 
 @app.post("/api/process-document")
@@ -132,194 +218,293 @@ async def download_result():
 async def chat_endpoint(chat_request: ChatRequest):
     """处理聊天请求"""
     try:
-        print(f"Received chat request: {chat_request.message[:100]}...")
+        print(f"收到聊天请求: {chat_request.message[:50]}...")
         
         # 准备消息历史
         messages = chat_request.chat_history.copy()
-        # 添加用户新消息
-        messages.append({"role": "user", "content": chat_request.message})
+        
+        # 检查是否是反馈消息 (通过JSON字符串发送的特殊格式)
+        try:
+            if chat_request.message.startswith('{') and '"type":"correction_feedback"' in chat_request.message:
+                feedback_data = json.loads(chat_request.message)
+                print(f"检测到纠错反馈消息: 用户{'' if feedback_data.get('satisfied') else '不'}满意")
+                
+                # 创建反馈消息对象
+                feedback_message = {
+                    "role": "user",
+                    "content": "用户反馈",
+                    "type": "correction_feedback",
+                    "satisfied": feedback_data.get("satisfied", False),
+                    "original_text": feedback_data.get("original_text", "")
+                }
+                
+                # 添加反馈消息到历史
+                messages.append(feedback_message)
+                
+                # 根据反馈决定下一步操作
+                if not feedback_data.get("satisfied", False):
+                    # 检查重新纠错次数
+                    current_count = 0
+                    # 从会话历史中查找之前的重新纠错次数
+                    for msg in messages:
+                        if msg.get("content") == "用户反馈" and msg.get("type") == "correction_feedback" and not msg.get("satisfied", True):
+                            current_count += 1
+                    
+                    # 检查是否超过最大尝试次数(3次)
+                    if current_count > 3:
+                        print(f"已达到最大重新纠错次数(3次)，提示用户")
+                        limit_message = "抱歉，我已尝试多次但似乎无法很好地满足您的纠错需求。可能我无法很好地修改您的公文，能请您换一种表达方式让我来修正吗？或者您可以更具体地描述您对纠错的期望。"
+                        messages.append({"role": "assistant", "content": limit_message})
+                        return ChatResponse(
+                            response=limit_message,
+                            chat_history=messages
+                        )
+                    
+                    # 不满意，添加系统回复
+                    system_reply = f"收到您的反馈，我将重新纠错。（第{current_count}次尝试）"
+                    messages.append({"role": "assistant", "content": system_reply})
+                    
+                    # 准备重新纠错的文本
+                    original_text = feedback_data.get("original_text", "")
+                    if original_text:
+                        print(f"将重新纠错文本: {original_text[:50]}...（第{current_count}次尝试）")
+                        
+                        # 检查上一条助手消息是否为CSC未发现错误的提示
+                        last_assistant_msg = None
+                        for i in range(len(messages)-2, -1, -1):
+                            if messages[i].get("role") == "assistant":
+                                last_assistant_msg = messages[i].get("content", "")
+                                break
+                        
+                        # 如果上一条消息是CSC未发现错误的提示，则直接调用大模型进行润色
+                        if last_assistant_msg and "CSC检查结果：未发现明显语法或拼写错误" in last_assistant_msg:
+                            print("💬 用户请求进一步润色，调用大模型...")
+                            # 使用特定的提示词进行润色
+                            system_prompt = """你是一个专业的公文润色助手。CSC工具已经检查过文本的基础语法和拼写，未发现明显错误。
+现在请你从以下方面对文本进行进一步润色和优化：
+1. 公文格式规范性检查
+2. 表达方式的专业性和正式性
+3. 语言流畅度和逻辑性
+4. 政策用语的准确性
+5. 段落结构和排版建议
+
+请在回复的开头添加标记[公文纠错专用模式-润色建议]，并明确说明这是在基础检查无误的基础上进行的进一步优化。
+"""
+                            correction_messages = [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": original_text}
+                            ]
+                            
+                            print("🤖 调用大模型进行公文润色...")
+                            correction_response = llm.invoke(correction_messages)
+                            
+                            # 添加特定前缀
+                            response_content = correction_response.content
+                            if not response_content.startswith("[公文纠错专用模式") and not response_content.startswith("【公文纠错专用模式"):
+                                response_content = f"""【公文纠错专用模式-润色建议】
+
+{response_content}
+"""
+                            # 添加回复
+                            messages.append({"role": "assistant", "content": response_content})
+                            
+                            return ChatResponse(
+                                response=response_content,
+                                chat_history=messages
+                            )
+                        else:
+                            # 非CSC未发现错误的情况，继续使用原有的重新纠错流程
+                            # 重新纠错处理 - 与正常纠错流程一致
+                            # 使用MCP中的CSC进行拼写纠错
+                            print("使用MCP协议的CSC功能进行拼写纠错...")
+                            try:
+                                start_time = time.time()
+                                correction_result = csc_tool.correct_text(original_text)
+                                elapsed_time = time.time() - start_time
+                                print(f"CSC调用耗时: {elapsed_time:.2f}秒")
+                                
+                                # 与普通纠错流程一致的处理逻辑...
+                                # 此处简化为直接使用大模型处理
+                                system_prompt = f"你是一个专业的公文纠错助手。用户对上一次的纠错结果不满意，请重新对以下内容进行更详细的公文格式和语法纠错，指出所有可能的错误并给出详尽的修改建议。在回复的开头添加标记[公文纠错专用模式-改进版]，以表明这是对上次纠错的改进。（请注意，这是第{current_count}次尝试纠错，用户之前不满意）"
+                                correction_messages = [
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": original_text}
+                                ]
+                                
+                                print("调用大模型进行重新纠错...")
+                                correction_response = llm.invoke(correction_messages)
+                                
+                                # 添加特定前缀
+                                response_content = correction_response.content
+                                if not response_content.startswith("[公文纠错专用模式") and not response_content.startswith("【公文纠错专用模式"):
+                                    response_content = f"""【公文纠错专用模式-聊天纠错已启用】
+
+{response_content}
+"""
+                                # 添加回复
+                                messages.append({"role": "assistant", "content": response_content})
+                                
+                            except Exception as e:
+                                print(f"重新纠错过程中出错: {e}")
+                                messages.append({"role": "assistant", "content": f"抱歉，重新纠错过程中出现错误。错误信息: {str(e)}"})
+                    else:
+                        # 找不到原始文本
+                        messages.append({"role": "assistant", "content": "抱歉，我找不到需要重新纠错的文本。请再次提供您需要纠错的内容。"})
+                else:
+                    # 满意，添加简单回复
+                    messages.append({"role": "assistant", "content": "感谢您的反馈！我很高兴能够帮助到您。"})
+                
+                return ChatResponse(
+                    response=messages[-1]["content"],
+                    chat_history=messages
+                )
+        except (json.JSONDecodeError, KeyError) as e:
+            # 不是有效的JSON或不包含必要字段，按普通消息处理
+            print(f"不是反馈消息，按普通消息处理: {e}")
+        
+        # 添加用户新消息 - 如果不是反馈消息
+        if not (chat_request.message.startswith('{') and '"type":"correction_feedback"' in chat_request.message):
+            messages.append({"role": "user", "content": chat_request.message})
         
         # 使用意图分类器判断意图
         intent = IntentClassifier.classify(chat_request.message)
-        print(f"Intent classified as: {intent}")
+        print(f"意图分类结果: {intent}")
         
         # 基于意图处理消息
         if intent == "correction" or intent == "recorrection":
-            print(f"Processing {intent} intent")
+            print(f"处理{intent}纠错意图")
             
-            # 检查是否是重新纠错请求
-            is_recorrection = intent == "recorrection"
+            # 提取需要纠错的文本
+            user_message = chat_request.message
+            text_to_correct = user_message.replace("请将", "").replace("进行公文纠错", "").strip()
+            if not text_to_correct or text_to_correct == user_message:
+                text_to_correct = user_message
             
-            # 如果是重新纠错，查找最近的纠错结果
-            if is_recorrection:
-                print("Detected request to improve previous correction")
-                # 查找上一次纠错的结果和原始内容
-                last_correction_result = None
-                last_correction_text = None
+            # 使用MCP中的CSC进行拼写纠错
+            try:
+                print("📝 使用MCP协议的CSC功能进行拼写纠错...")
+                start_time = time.time()
                 
-                # 查找最近的助手回复中包含纠错标记的消息
-                for i in range(len(chat_request.chat_history) - 1, -1, -1):
-                    msg = chat_request.chat_history[i]
-                    if msg["role"] == "assistant" and ("[公文纠错专用模式" in msg["content"]):
-                        last_correction_result = msg["content"]
-                        break
+                # 使用langgraph中的工具调用CSC功能
+                correction_result = csc_tool.correct_text(text_to_correct)
+                elapsed_time = time.time() - start_time
+                print(f"CSC调用耗时: {elapsed_time:.2f}秒")
                 
-                # 查找与该纠错结果对应的原始文本
-                if last_correction_result:
-                    # 往前查找请求纠错的用户消息
-                    for i in range(len(chat_request.chat_history) - 1, -1, -1):
-                        msg = chat_request.chat_history[i]
-                        if msg["role"] == "user" and (
-                            "纠错" in msg["content"] or 
-                            "修正" in msg["content"] or 
-                            "修改" in msg["content"]):
-                            # 提取原始文本
-                            text_to_correct = msg["content"].replace("请将", "").replace("进行公文纠错", "").strip()
-                            if not text_to_correct or text_to_correct == msg["content"]:
-                                # 如果提取失败，使用整个消息
-                                text_to_correct = msg["content"]
-                            
-                            last_correction_text = text_to_correct
-                            break
-                
-                # 如果找到了前次纠错结果和原始文本
-                if last_correction_text:
-                    text_to_correct = last_correction_text
-                    print(f"Found previous correction text: {text_to_correct[:100]}...")
+                # 解析纠错结果
+                if "纠错后的文本" in correction_result and "主要修改" in correction_result:
+                    # MCP工具返回的结果是字符串，需要解析
+                    corrected_parts = correction_result.split("\n主要修改:")
+                    corrected_text = corrected_parts[0].replace("纠错后的文本:", "").strip()
+                    modifications = corrected_parts[1].strip() if len(corrected_parts) > 1 else ""
                     
-                    # 构建提示，指示模型提供更好的纠错结果
-                    system_prompt = "你是一个专业的公文纠错助手。用户对之前的纠错结果不满意，请提供一个更好的公文纠错结果。请对以下内容进行更细致、更专业的公文格式和语法纠错，指出错误并给出修改建议。在回复的开头添加标记[公文纠错专用模式-改进版]，以表明这是改进后的纠错结果。"
-                else:
-                    # 如果没有找到前次纠错内容，则按普通纠错处理
-                    print("No previous correction found, treating as regular correction")
-                    is_recorrection = False
-            
-            # 如果不是重新纠错（或者没找到前次纠错内容）
-            if not is_recorrection:
-                # 检查是否是要纠错历史消息
-                is_history_correction = IntentClassifier.is_history_correction(chat_request.message)
-                
-                if is_history_correction and len(chat_request.chat_history) >= 2:
-                    print("Detected request to correct previous message")
-                    # 查找最近的用户消息作为纠错内容
-                    previous_user_messages = [msg for msg in chat_request.chat_history if msg["role"] == "user"]
-                    if previous_user_messages:
-                        # 使用最近一条用户消息作为纠错内容
-                        text_to_correct = previous_user_messages[-1]["content"]
-                        print(f"Using previous message for correction: {text_to_correct[:100]}...")
+                    if modifications and "文本未发现明显拼写错误" not in modifications:
+                        print(f"✅ CSC修正成功: {modifications}")
+                        
+                        # 构建回复内容 - 直接使用CSC的结果
+                        response_content = f"""【MCP协议公文纠错专用模式已启用】
+
+修改后的文本：
+{corrected_text}
+
+主要修改：
+{modifications}
+"""
                     else:
-                        # 如果没有找到历史用户消息，则使用当前消息
-                        text_to_correct = chat_request.message
+                        print("❌ CSC未发现需要修改的内容")
+                        
+                        # 添加提示信息，告知用户没有发现语法错误，但可以进行润色
+                        intermediate_message = """【MCP协议公文纠错专用模式已启用】
+
+CSC检查结果：未发现明显语法或拼写错误。
+
+是否需要对文本进行进一步润色和改进？我可以通过大模型提供更细致的建议，包括格式规范、表达优化等方面的建议。
+
+如需进行进一步润色，请点击"不满意"按钮。
+如果您仅需检查基础语法并对结果满意，请点击"满意"按钮。
+"""
+                        
+                        messages.append({"role": "assistant", "content": intermediate_message})
+                        
+                        return ChatResponse(
+                            response=intermediate_message,
+                            chat_history=messages
+                        )
                 else:
-                    # 常规纠错，从当前消息中提取内容
-                    user_message = chat_request.message
-                    text_to_correct = user_message.replace("请将", "").replace("进行公文纠错", "").strip()
-                    if not text_to_correct or text_to_correct == user_message:
-                        # 如果提取失败，使用整个消息作为纠错内容
-                        text_to_correct = user_message
-                
-                # 普通纠错的系统提示词
+                    # 处理无法解析的情况
+                    print("CSC返回结果格式异常，使用大模型进行纠错...")
+                    system_prompt = "你是一个专业的公文纠错助手。请对以下内容进行公文格式和语法纠错，指出错误并给出修改建议。在回复的开头添加标记[公文纠错专用模式-聊天纠错]，以表明这是使用专门的纠错功能处理的。"
+                    correction_messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": text_to_correct}
+                    ]
+                    
+                    print("🤖 调用大模型进行纠错...")
+                    correction_response = llm.invoke(correction_messages)
+                    
+                    # 添加特定前缀
+                    response_content = correction_response.content
+                    if not response_content.startswith("[公文纠错专用模式") and not response_content.startswith("【公文纠错专用模式"):
+                        response_content = f"""【公文纠错专用模式-聊天纠错已启用】
+
+{response_content}
+"""
+            except Exception as e:
+                print(f"CSC纠错过程中出错: {e}")
+                # 如果CSC出错，使用大模型进行纠错
                 system_prompt = "你是一个专业的公文纠错助手。请对以下内容进行公文格式和语法纠错，指出错误并给出修改建议。在回复的开头添加标记[公文纠错专用模式-聊天纠错]，以表明这是使用专门的纠错功能处理的。"
-            
-            print(f"Text to correct: {text_to_correct[:100]}...")
-            
-            # 构建对模型的请求
-            correction_messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text_to_correct}
-            ]
-            
-            # 如果是重新纠错，添加前次结果作为上下文
-            if is_recorrection and last_correction_result:
-                correction_messages.append({"role": "assistant", "content": last_correction_result})
-                correction_messages.append({"role": "user", "content": "请改进上面的纠错结果，提供更好的公文纠错建议。"})
-            
-            # 调用模型进行纠错
-            print("Calling model for correction...")
-            correction_response = llm.invoke(correction_messages)
-            print(f"Correction response received")
-            
-            response_content = correction_response.content
+                correction_messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text_to_correct}
+                ]
+                
+                print("🤖 调用大模型进行纠错...")
+                correction_response = llm.invoke(correction_messages)
+                
+                # 添加特定前缀
+                response_content = correction_response.content
+                if not response_content.startswith("[公文纠错专用模式") and not response_content.startswith("【公文纠错专用模式"):
+                    response_content = f"""【公文纠错专用模式-聊天纠错已启用】
+
+{response_content}
+"""
         else:
             # 常规聊天处理
-            print("Processing regular chat intent")
+            print("处理常规聊天意图")
             
             # 使用更适合聊天的系统提示词
-            chat_system_prompt = "你是DeepSeek Chat开发的AI助手，正在与用户进行普通聊天对话。请用自然、友好的方式回答用户问题，无需使用公文格式。不要在回复中添加任何[公文纠错专用模式]的标记。"
+            chat_system_prompt = """你是一个名为"小公"的AI助手。请注意：
+1. 当用户询问你的名字、身份或类似问题时，你必须回答："我是小公，您的智能公文助手。"
+2. 请用自然、友好的方式回答用户问题
+3. 回答应简洁明了，不要过于冗长
+4. 无需使用公文格式
+5. 不要在回复中添加任何[公文纠错专用模式]的标记"""
             
             # 准备聊天消息，添加系统提示
             chat_messages = [{"role": "system", "content": chat_system_prompt}]
             # 添加历史消息
             for msg in messages:
                 chat_messages.append(msg)
-            
-            # 调用模型进行聊天回复
+                
+            # 调用聊天模型
+            print("调用大模型进行聊天回复...")
             chat_response = llm.invoke(chat_messages)
+            
             response_content = chat_response.content
-            print(f"Chat response received")
         
-        # 更新聊天历史
+        # 更新消息历史
         messages.append({"role": "assistant", "content": response_content})
         
-        print("Returning chat response")
-        # 返回响应
         return ChatResponse(
             response=response_content,
             chat_history=messages
         )
     except Exception as e:
-        import traceback
-        print(f"Error in chat_endpoint: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"处理聊天时出错: {str(e)}")
-
-@app.post("/api/progressive-correction")
-async def progressive_correction(request: ProgressiveCorrectionRequest):
-    """渐进式公文纠错，按步骤进行纠错"""
-    try:
-        step = request.step
-        text = request.text
-        
-        system_prompts = {
-            "format": "你是一个专业的公文格式纠错助手。请仅对以下内容的公文格式进行纠正，包括标题、发文字号、日期、正文结构等格式问题。不要修改内容或语法。给出格式方面的详细纠正建议。",
-            "grammar": "你是一个专业的公文语法纠错助手。请对以下内容的语法和标点符号进行纠正，包括句式结构、主谓一致、时态、标点使用等问题。此步骤不修改内容或格式。给出语法方面的详细纠正建议。",
-            "expression": "你是一个专业的公文表达润色助手。请对以下内容的表达方式进行优化，使其更加正式、清晰和准确。改进用词、消除歧义、提高语言的专业性和政策性。给出表达方面的详细改进建议。"
-        }
-        
-        next_steps = {
-            "format": "grammar",
-            "grammar": "expression",
-            "expression": None
-        }
-        
-        # 构建提示
-        system_prompt = system_prompts.get(step, system_prompts["format"])
-        
-        correction_messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text}
-        ]
-        
-        print(f"Processing progressive correction step: {step}")
-        correction_response = llm.invoke(correction_messages)
-        
-        response_content = correction_response.content
-        
-        # 提取修改后的文本和解释（这里简化处理，实际应用可能需要更复杂的解析）
-        parts = response_content.split("修改建议：", 1)
-        explanation = parts[0].strip()
-        corrected_text = parts[1].strip() if len(parts) > 1 else response_content
-        
-        return ProgressiveCorrectionResponse(
-            corrected_text=corrected_text,
-            explanation=explanation,
-            next_step=next_steps[step]
-        )
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"渐进式纠错过程中出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"处理聊天请求时出错: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
-    # 更改端口为8003
+    print("\n🚀 启动文档处理和聊天API服务...")
+    print("✅ 文档处理功能: http://0.0.0.0:8003/api/process-document")
+    print("✅ 聊天功能: http://0.0.0.0:8003/api/chat")
+    # 端口保持为8003
     uvicorn.run(app, host="0.0.0.0", port=8003) 
