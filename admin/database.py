@@ -3,7 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker,declarative_base
 
 # 替换为你的 MySQL 配置
-DATABASE_URL = "mysql+pymysql://root:318627tang@localhost:3306/user_management?charset=utf8mb4"
+DATABASE_URL = "mysql+pymysql://root:HZC20230904...@localhost:3306/user_management?charset=utf8mb4"
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
