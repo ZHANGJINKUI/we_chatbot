@@ -1,112 +1,411 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
-// 使用全局CSS替代模块CSS
+// 使用全局CSS和三栏布局CSS
 import './styles.css';
+import './three-column.css';
 
 // 使用服务器IP替代localhost
-const SERVER_IP = '10.102.59.4';
+const SERVER_IP = 'localhost';
 // 更新API端口
 const API_PORT = 8003;
 
-// 定义消息类型
-type ChatMessage = {
-  role: string;
-  content: string;
-  type?: string;
-  isFeedbackProcessing?: boolean;
+// 持久化存储键
+const STORAGE_KEYS = {
+  DOCUMENT_HISTORY: 'docApp_documentHistory',
+  CHAT_HISTORY: 'docApp_chatHistory',
+  ACTIVE_DOCUMENT: 'docApp_activeDocument',
+  ORIGINAL_CONTENT: 'docApp_originalContent',
+  PROCESSED_DOCUMENT: 'docApp_processedDocument'
 };
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [processedDocument, setProcessedDocument] = useState<string | null>(null);
   const [originalContent, setOriginalContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showComparison, setShowComparison] = useState<boolean>(true); // 默认显示对比视图
-  
+  const [isSaving, setIsSaving] = useState(false);
+
+  // 服务器连接状态
+  const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [isReconnecting, setIsReconnecting] = useState(false);
+
   // 聊天相关状态
-  const [showChat, setShowChat] = useState(false);
   const [message, setMessage] = useState('');
-  const [chatHistory, setChatHistory] = useState<Array<ChatMessage>>([]);
+  const [chatHistory, setChatHistory] = useState<Array<{ role: string, content: string }>>([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
 
-  // 在组件顶部添加状态管理
-  const [isFeedbackLoading, setIsFeedbackLoading] = useState(false);
+  // 文档历史管理
+  const [documentHistory, setDocumentHistory] = useState<Array<{ id: string, name: string, timestamp: Date, content: string }>>([]);
+  const [activeDocument, setActiveDocument] = useState<string | null>(null);
+
+  // 引用chatMessagesContainer进行聊天窗口自动滚动
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
+
+  // 检查服务器连接状态
+  const checkServerConnection = async () => {
+    try {
+      // 增加超时时间到15000毫秒（15秒）
+      await axios.get(`http://${SERVER_IP}:${API_PORT}/api/health-check`, {
+        timeout: 15000,
+        // 添加重试配置
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
+      });
+      setServerStatus('online');
+      return true;
+    } catch (error) {
+      console.error('Server connection check failed:', error);
+      // 设置离线状态
+      setServerStatus('offline');
+      return false;
+    }
+  };
+
+  // 定期检查服务器连接
+  useEffect(() => {
+    // 初始检查
+    checkServerConnection();
+
+    // 设置定期检查，增加间隔时间避免频繁检查导致性能问题
+    const intervalId = setInterval(() => {
+      checkServerConnection();
+    }, 60000); // 每60秒检查一次（原来是30秒）
+
+    return () => clearInterval(intervalId);
+  }, []);
+
+  // 尝试重新连接服务器
+  const handleReconnect = async () => {
+    setIsReconnecting(true);
+
+    try {
+      const isConnected = await checkServerConnection();
+      if (isConnected) {
+        // 连接成功，可以在这里添加提示或其他操作
+      }
+    } catch (error) {
+      console.error('Reconnection attempt failed:', error);
+    } finally {
+      setIsReconnecting(false);
+    }
+  };
+
+  // 从localStorage加载持久化数据
+  useEffect(() => {
+    // 尝试从localStorage加载文档历史
+    try {
+      const savedDocumentHistory = localStorage.getItem(STORAGE_KEYS.DOCUMENT_HISTORY);
+      if (savedDocumentHistory) {
+        const parsedDocHistory = JSON.parse(savedDocumentHistory);
+        // 将字符串时间戳转换回Date对象
+        const formattedDocHistory = parsedDocHistory.map((doc: any) => ({
+          ...doc,
+          timestamp: new Date(doc.timestamp)
+        }));
+        setDocumentHistory(formattedDocHistory);
+      }
+
+      // 加载活动文档ID
+      const savedActiveDocument = localStorage.getItem(STORAGE_KEYS.ACTIVE_DOCUMENT);
+      if (savedActiveDocument) {
+        setActiveDocument(savedActiveDocument);
+      }
+
+      // 加载原始文档内容
+      const savedOriginalContent = localStorage.getItem(STORAGE_KEYS.ORIGINAL_CONTENT);
+      if (savedOriginalContent) {
+        setOriginalContent(savedOriginalContent);
+      }
+
+      // 加载处理后的文档
+      const savedProcessedDocument = localStorage.getItem(STORAGE_KEYS.PROCESSED_DOCUMENT);
+      if (savedProcessedDocument) {
+        setProcessedDocument(savedProcessedDocument);
+      }
+
+      // 加载聊天历史
+      const savedChatHistory = localStorage.getItem(STORAGE_KEYS.CHAT_HISTORY);
+      if (savedChatHistory) {
+        setChatHistory(JSON.parse(savedChatHistory));
+      }
+    } catch (err) {
+      console.error('Error loading data from localStorage:', err);
+      // 如果加载出错，清空localStorage防止持续错误
+      localStorage.clear();
+    }
+  }, []);
+
+  // 保存文档历史到localStorage
+  useEffect(() => {
+    if (documentHistory.length > 0) {
+      localStorage.setItem(STORAGE_KEYS.DOCUMENT_HISTORY, JSON.stringify(documentHistory));
+    }
+  }, [documentHistory]);
+
+  // 保存活动文档ID到localStorage
+  useEffect(() => {
+    if (activeDocument) {
+      localStorage.setItem(STORAGE_KEYS.ACTIVE_DOCUMENT, activeDocument);
+    }
+  }, [activeDocument]);
+
+  // 保存原始内容到localStorage
+  useEffect(() => {
+    if (originalContent) {
+      localStorage.setItem(STORAGE_KEYS.ORIGINAL_CONTENT, originalContent);
+    }
+  }, [originalContent]);
+
+  // 保存处理后的文档到localStorage
+  useEffect(() => {
+    if (processedDocument) {
+      localStorage.setItem(STORAGE_KEYS.PROCESSED_DOCUMENT, processedDocument);
+    }
+  }, [processedDocument]);
+
+  // 保存聊天历史到localStorage
+  useEffect(() => {
+    if (chatHistory.length > 0) {
+      localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(chatHistory));
+    }
+  }, [chatHistory]);
+
+  // 聊天窗口自动滚动到底部
+  useEffect(() => {
+    if (chatMessagesRef.current) {
+      chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
+    }
+  }, [chatHistory, isChatLoading]);
+
+  // 清除所有持久化数据
+  const clearAllStoredData = () => {
+    Object.values(STORAGE_KEYS).forEach(key => {
+      localStorage.removeItem(key);
+    });
+    setDocumentHistory([]);
+    setChatHistory([]);
+    setActiveDocument(null);
+    setOriginalContent(null);
+    setProcessedDocument(null);
+  };
 
   const handleFileSelect = (selectedFile: File) => {
     if (!selectedFile.name.endsWith('.docx')) {
       setError('只支持.docx格式文件');
       return;
     }
-    
+
     setFile(selectedFile);
-    setResult(null);
+    setProcessedDocument(null);
     setError(null);
   };
 
-  const handleProcessFile = async () => {
+  const handleUploadFile = async () => {
     if (!file) return;
-    
+
+    // 文件大小检查 - 超过10MB警告
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+    if (file.size > MAX_FILE_SIZE) {
+      if (!confirm(`文件大小(${formatFileSize(file.size)})超过10MB，上传可能需要较长时间，是否继续？`)) {
+        return;
+      }
+    }
+
     const formData = new FormData();
     formData.append('file', file);
-    
+
     setIsLoading(true);
     setError(null);
-    
+    setUploadProgress(0);
+
     try {
-      const response = await axios.post(
-        `http://${SERVER_IP}:${API_PORT}/api/process-document`, 
-        formData,
-        {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
+      // 添加重试逻辑
+      let retries = 3;
+      let response;
+
+      while (retries >= 0) {
+        try {
+          // 使用axios的进度事件监控上传进度
+          response = await axios.post(
+            `http://${SERVER_IP}:${API_PORT}/api/upload-document`, // 使用更高效的upload-document端点
+            formData,
+            {
+              headers: {
+                'Content-Type': 'multipart/form-data',
+              },
+              timeout: 60000, // 60秒超时
+              onUploadProgress: (progressEvent) => {
+                // 更新上传进度
+                const percentCompleted = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
+                setUploadProgress(percentCompleted);
+              }
+            }
+          );
+          break; // 请求成功，退出循环
+        } catch (err) {
+          retries--;
+          console.error(`文件上传失败，剩余重试次数: ${retries}`);
+
+          if (retries < 0) {
+            throw err; // 重试用尽，抛出错误
+          }
+
+          // 等待一秒后重试
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
-      );
-      
-      setResult(response.data.content);
-      setOriginalContent(response.data.original_content);
-      
+      }
+
+      if (!response) {
+        throw new Error('上传失败，请重试');
+      }
+
+      // 使用原始内容
+      setOriginalContent(response.data.content);
+
+      // 添加到文档历史
+      const newDocId = Date.now().toString();
+      const newDocument = {
+        id: newDocId,
+        name: file.name,
+        timestamp: new Date(),
+        content: response.data.content
+      };
+
+      setDocumentHistory([newDocument, ...documentHistory]);
+      setActiveDocument(newDocId);
+
+      // 添加上传成功消息到聊天历史
+      setChatHistory([...chatHistory,
+      {
+        role: 'assistant',
+        content: '文档上传成功。您可以继续聊天，所有对话都将基于这个文档。或者输入处理指令（如：总结文档内容、提取关键信息、纠正错误等）'
+      }
+      ]);
+
     } catch (error: any) {
-      console.error('Error processing document:', error);
-      setError(error.response?.data?.detail || '文档处理过程中发生错误，请重试');
+      console.error('Error uploading document:', error);
+      // 提供更具体的错误信息
+      let errorMsg = '上传文档过程中发生错误，请重试';
+      if (error.response) {
+        // 服务器响应错误
+        errorMsg = error.response.data?.detail || errorMsg;
+      } else if (error.request) {
+        // 未收到响应
+        errorMsg = '服务器未响应，请检查网络连接或联系管理员';
+      } else {
+        // 请求设置错误
+        errorMsg = `请求错误: ${error.message}`;
+      }
+      setError(errorMsg);
     } finally {
       setIsLoading(false);
+      setUploadProgress(0);
     }
   };
 
   const handleReset = () => {
     setFile(null);
-    setResult(null);
+    setProcessedDocument(null);
     setOriginalContent(null);
+
+    // 清除localStorage中的数据
+    localStorage.removeItem(STORAGE_KEYS.PROCESSED_DOCUMENT);
+    localStorage.removeItem(STORAGE_KEYS.ORIGINAL_CONTENT);
   };
-  
-  // 发送聊天消息
+
+  // 发送聊天消息并处理文档
   const handleSendMessage = async () => {
     if (!message.trim()) return;
-    
+
     const userMessage = { role: 'user', content: message };
     const updatedHistory = [...chatHistory, userMessage];
-    
+
     setChatHistory(updatedHistory);
     setMessage('');
     setIsChatLoading(true);
-    
+
     try {
-      const response = await axios.post(`http://${SERVER_IP}:${API_PORT}/api/chat`, {
-        message: message,
-        chat_history: chatHistory
-      });
-      
-      setChatHistory(response.data.chat_history);
+      // 判断是否存在文档内容
+      const hasDocument = originalContent !== null;
+
+      // 发送聊天请求
+      let retries = 3; // 最多重试3次
+      let response;
+
+      while (retries >= 0) {
+        try {
+          response = await axios.post(`http://${SERVER_IP}:${API_PORT}/api/chat`, {
+            message: message,
+            document_content: hasDocument ? originalContent : null,
+            chat_history: hasDocument ? [] : chatHistory.slice(-10) // 如果有文档，不传历史；否则传最近的历史
+          }, {
+            timeout: 60000, // 60秒超时
+            headers: {
+              'Content-Type': 'application/json',
+            }
+          });
+          break; // 请求成功，退出循环
+        } catch (err) {
+          retries--;
+          console.error(`请求失败，剩余重试次数: ${retries}`);
+
+          if (retries < 0) {
+            throw err; // 重试用尽，抛出错误
+          }
+
+          // 等待一秒后重试
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+
+      // 如果有文档内容，则将响应设置为处理后的文档内容
+      if (hasDocument && response) {
+        setProcessedDocument(response.data.processed_document);
+
+        // 更新聊天历史，显示文档已处理的消息
+        setChatHistory([
+          ...updatedHistory,
+          { role: 'assistant', content: '已根据您的指令处理文档，处理结果已显示在中间区域。' }
+        ]);
+      } else if (response) {
+        // 普通聊天模式，直接将回复添加到聊天历史
+        setChatHistory([
+          ...updatedHistory,
+          { role: 'assistant', content: response.data.response }
+        ]);
+      }
+
     } catch (error: any) {
-      console.error('Error sending message:', error);
-      // 添加错误消息到聊天历史
+      console.error('Error processing message:', error);
+
+      // 提供更详细的错误信息
+      let errorMessage = '发生错误，请重试';
+
+      if (error.message === 'Network Error') {
+        errorMessage = '网络连接错误，请检查您的网络连接或确认服务器是否正在运行。';
+      } else if (error.code === 'ECONNABORTED') {
+        errorMessage = '请求超时，服务器响应时间过长。';
+      } else if (error.response) {
+        // 服务器返回了错误状态码
+        const status = error.response.status;
+        if (status === 404) {
+          errorMessage = 'API路径未找到，请检查服务器配置。';
+        } else if (status >= 500) {
+          errorMessage = '服务器内部错误，请稍后重试。';
+        } else {
+          errorMessage = `服务器返回错误：${status}`;
+        }
+      }
+
       setChatHistory([
-        ...updatedHistory, 
-        { role: 'assistant', content: '发生错误，请重试' }
+        ...updatedHistory,
+        { role: 'assistant', content: errorMessage }
       ]);
     } finally {
       setIsChatLoading(false);
@@ -119,774 +418,436 @@ export default function Home() {
     else return (bytes / 1048576).toFixed(2) + ' MB';
   };
 
-  // 格式化响应，处理特殊格式
-  const formatResponse = (responseText: string) => {
-    // 添加更全面的检测模式，包括各种可能的前缀
-    const correctionPrefixes = [
-      '【MCP协议公文纠错专用模式已启用】',
-      '【公文纠错专用模式-文档处理已启用】',
-      '【公文纠错专用模式-聊天纠错已启用】', 
-      '【公文纠错专用模式-润色建议】',
-      '【公文纠错专用模式-改进版】',
-      '[公文纠错专用模式-文档处理]',
-      '[公文纠错专用模式-聊天纠错]',
-      '[公文纠错专用模式-润色建议]',
-      '[公文纠错专用模式-改进版]',
-      '[公文纠错专用模式-LLM纠错]',
-      '[公文纠错专用模式-联合纠错]'
-    ];
-    
-    // 检查是否包含任何一种纠错模式前缀
-    for (const prefix of correctionPrefixes) {
-      if (responseText.includes(prefix)) {
-        const mainContent = responseText.replace(prefix, '');
-        // 根据前缀类型确定图标和标题
-        let icon = '💬';
-        let title = '公文纠错专用模式';
-        
-        if (prefix.includes('MCP协议')) {
-          icon = '🔧';
-          title = 'MCP协议公文纠错专用模式已启用';
-        } else if (prefix.includes('文档处理')) {
-          icon = '📄';
-          title = '公文纠错专用模式-文档处理';
-        } else if (prefix.includes('润色建议')) {
-          icon = '✨';
-          title = '公文纠错专用模式-润色建议';
-        } else if (prefix.includes('改进版')) {
-          icon = '🔄';
-          title = '公文纠错专用模式-改进版';
-        } else if (prefix.includes('LLM纠错')) {
-          icon = '🤖';
-          title = '公文纠错专用模式-LLM纠错';
-        } else if (prefix.includes('联合纠错')) {
-          icon = '🔗';
-          title = '公文纠错专用模式-联合纠错';
-        }
-        
-        // 所有纠错模式都包含反馈按钮
-        return (
-          <>
-            <div className={`special-mode-tag ${prefix.includes('MCP协议') ? 'mcp' : prefix.includes('文档处理') ? 'doc' : 'chat'}`}>
-              <div>
-                <span className="icon">{icon}</span>
-                {title}
-              </div>
-              <div className="feedback-buttons">
-                <button 
-                  className="feedback-btn positive" 
-                  onClick={() => handleFeedback('positive', findLastCorrectionText(chatHistory))}
-                >
-                  满意
-                </button>
-                <button 
-                  className="feedback-btn negative" 
-                  onClick={() => handleFeedback('negative', findLastCorrectionText(chatHistory))}
-                >
-                  不满意
-                </button>
-              </div>
-            </div>
-            {mainContent}
-          </>
-        );
+  // 选择历史文档
+  const handleSelectDocument = (docId: string) => {
+    const selectedDoc = documentHistory.find(doc => doc.id === docId);
+    if (selectedDoc) {
+      setActiveDocument(docId);
+      setOriginalContent(selectedDoc.content);
+      setProcessedDocument(null); // 清除之前的处理结果
+    }
+  };
+
+  // 删除历史文档
+  const handleDeleteDocument = (event: React.MouseEvent, docId: string) => {
+    // 阻止事件冒泡到父元素，避免触发选择文档
+    event.stopPropagation();
+
+    // 确认是否删除
+    if (window.confirm('确定要删除此文档吗？')) {
+      // 从历史中过滤掉要删除的文档
+      const updatedHistory = documentHistory.filter(doc => doc.id !== docId);
+      setDocumentHistory(updatedHistory);
+
+      // 如果删除的是当前活动文档，则清空当前内容
+      if (activeDocument === docId) {
+        setActiveDocument(null);
+        setOriginalContent(null);
+        setProcessedDocument(null);
       }
     }
-    
-    // 警告：检查是否有潜在的部分匹配，可能因为格式问题未被正确识别
-    if (responseText.includes('公文纠错专用模式') || responseText.includes('MCP协议')) {
-      console.warn('检测到可能的纠错模式标签，但格式不完全匹配:', responseText.substring(0, 50));
+  };
+
+  // 保存处理后的文档
+  const handleSaveDocument = async () => {
+    if (!processedDocument || !activeDocument) return;
+
+    const activeDoc = documentHistory.find(doc => doc.id === activeDocument);
+    if (!activeDoc) return;
+
+    setIsSaving(true);
+
+    try {
+      // 添加重试逻辑
+      let retries = 3;
+
+      while (retries >= 0) {
+        try {
+          // 调用新的保存文档接口
+          await axios.post(`http://${SERVER_IP}:${API_PORT}/api/save-document`, {
+            document_id: activeDocument,
+            content: processedDocument,
+            filename: activeDoc.name
+          }, {
+            timeout: 30000 // 30秒超时
+          });
+          break; // 请求成功，退出循环
+        } catch (err) {
+          retries--;
+          console.error(`保存文档失败，剩余重试次数: ${retries}`);
+
+          if (retries < 0) {
+            throw err; // 重试用尽，抛出错误
+          }
+
+          // 等待一秒后重试
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+
+      // 更新本地文档历史
+      const updatedHistory = documentHistory.map(doc => {
+        if (doc.id === activeDocument) {
+          return {
+            ...doc,
+            content: processedDocument, // 更新文档内容为处理后的内容
+            timestamp: new Date() // 更新时间戳
+          };
+        }
+        return doc;
+      });
+
+      setDocumentHistory(updatedHistory);
+      setOriginalContent(processedDocument); // 将处理后的内容作为新的原始内容
+      // 保留处理后的文档状态，这样下载按钮仍然会显示
+      setProcessedDocument(processedDocument);
+
+      // 显示保存成功提示
+      alert('文档保存成功');
+    } catch (error) {
+      console.error('Error saving document:', error);
+      alert('保存文档时发生错误');
+    } finally {
+      setIsSaving(false);
     }
-    
-    return responseText;
+  };
+
+  // 查找最近一次用于纠错的文本
+  const findLastCorrectionText = (): string | null => {
+    for (let i = chatHistory.length - 1; i >= 0; i--) {
+      const msg = chatHistory[i];
+      if (msg.role === 'user' &&
+        (msg.content.includes('纠错') ||
+          msg.content.includes('修正') ||
+          msg.content.includes('修改'))) {
+        // 从用户消息中提取原始文本
+        return msg.content.replace(/请对|请将|进行公文纠错|纠错|修正|修改/g, '').trim();
+      }
+    }
+    return null;
   };
 
   // 处理反馈
-  const handleFeedback = (isPositive: string, correctionResult: string) => {
-    // 找到最后一次用户提供的纠错文本
-    const originalText = findLastCorrectionText(chatHistory);
-    
-    if (originalText) {
-      // 设置加载状态
-      setIsFeedbackLoading(true);
-      
-      // 创建反馈消息
-      const feedbackMessage = {
-        role: 'user',
-        content: '用户反馈',
-        type: 'correction_feedback',
-        satisfied: isPositive === 'positive',
-        original_text: originalText
-      };
-      
-      // 添加一个临时反馈消息到历史
-      const tempMessage = {
-        role: 'assistant',
-        content: isPositive === 'positive' ? '感谢您的反馈！' : '正在处理您的反馈，重新纠错中...',
-        isFeedbackProcessing: true
-      };
-      
-      const updatedHistory = [...chatHistory, feedbackMessage, tempMessage];
-      setChatHistory(updatedHistory);
-      
-      // 发送到后端
-      axios.post(`http://${SERVER_IP}:${API_PORT}/api/chat`, {
-        message: JSON.stringify(feedbackMessage),
-        chat_history: chatHistory
-      })
-      .then(response => {
-        setChatHistory(response.data.chat_history);
-        setIsFeedbackLoading(false);
-      })
-      .catch(error => {
-        console.error('Error sending feedback:', error);
-        alert('发送反馈时出错，请重试');
-        setIsFeedbackLoading(false);
-      });
+  const handleFeedback = (isPositive: boolean, correctionResult: string) => {
+    if (isPositive) {
+      // 处理满意反馈
+      alert('感谢您的反馈！');
     } else {
-      // 当找不到原始文本时
-      alert(isPositive === 'positive' ? '感谢您的反馈！' : '抱歉，无法找到需要重新纠错的文本');
+      // 处理不满意反馈，提示重新纠错
+      const originalText = findLastCorrectionText();
+
+      if (originalText) {
+        // 设置消息为要求改进的纠错请求
+        setMessage(`这个纠错结果不满意，请重新纠错并改进：${originalText}`);
+        // 聚焦到输入框
+        const inputElement = document.querySelector('.chat-input input') as HTMLInputElement;
+        if (inputElement) {
+          inputElement.focus();
+        }
+      } else {
+        setMessage('请重新纠错并提供更好的结果');
+      }
     }
   };
 
-  // 从聊天历史中找到最后一条需要反馈的纠错文本
-  const findLastCorrectionText = (history: ChatMessage[]): string => {
-    // 倒序遍历历史记录，找到最近的用户消息
-    for (let i = history.length - 1; i >= 0; i--) {
-      if (history[i].role === 'user') {
-        return history[i].content;
-      }
+  // 处理特殊标记的函数
+  const formatResponse = (response: string) => {
+    if (typeof response !== 'string') {
+      return response;
     }
-    return '';
+
+    if (response.includes('[公文纠错专用模式-文档处理]')) {
+      return (
+        <div>
+          <div className="special-mode-tag doc">
+            <span className="icon">🔍</span>
+            文档纠错专用模式已启用
+            <div className="feedback-buttons">
+              <button className="feedback-btn positive" onClick={() => handleFeedback(true, response)}>
+                👍 满意
+              </button>
+              <button className="feedback-btn negative" onClick={() => handleFeedback(false, response)}>
+                👎 不满意
+              </button>
+            </div>
+          </div>
+          {response.replace('[公文纠错专用模式-文档处理]', '')}
+        </div>
+      );
+    } else if (response.includes('[公文纠错专用模式-聊天纠错]')) {
+      return (
+        <div>
+          <div className="special-mode-tag chat">
+            <span className="icon">💬</span>
+            聊天纠错专用模式已启用
+            <div className="feedback-buttons">
+              <button className="feedback-btn positive" onClick={() => handleFeedback(true, response)}>
+                👍 满意
+              </button>
+              <button className="feedback-btn negative" onClick={() => handleFeedback(false, response)}>
+                👎 不满意
+              </button>
+            </div>
+          </div>
+          {response.replace('[公文纠错专用模式-聊天纠错]', '')}
+        </div>
+      );
+    } else {
+      // 确保不包含任何部分匹配的标记文本
+      if (response.includes('公文纠错') || response.includes('专用模式')) {
+        console.warn('发现可能的部分标记匹配:', response.substring(0, 50));
+      }
+      return response;
+    }
   };
 
   return (
-    <div className="main-container">
-      <header className="app-header">
-        <h1>智能公文纠错系统</h1>
-        <div className="app-tabs">
-          <button 
-            className={!showChat ? 'active' : ''}
-            onClick={() => {
-              setShowChat(false);
-            }}
-            style={{
-              padding: '12px 25px',
-              fontSize: '16px',
-              borderRadius: '8px 8px 0 0',
-              margin: '0 8px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              transition: 'all 0.3s ease'
-            }}
-          >
-            <span style={{ marginRight: '8px', fontSize: '20px' }}>📄</span>
-            文档纠错
-          </button>
-          <button 
-            className={showChat ? 'active' : ''}
-            onClick={() => {
-              setShowChat(true);
-            }}
-            style={{
-              padding: '12px 25px',
-              fontSize: '16px',
-              borderRadius: '8px 8px 0 0',
-              margin: '0 8px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              transition: 'all 0.3s ease'
-            }}
-          >
-            <span style={{ marginRight: '8px', fontSize: '20px' }}>💬</span>
-            聊天助手
-          </button>
+    <main className="main">
+      <div className="container">
+        <div className="header">
+          <h1>文档处理与智能问答系统</h1>
+          {/* 服务器状态指示器 */}
+          <div className="server-status">
+            <span className={`status-indicator ${serverStatus}`}></span>
+            <span className="status-text">
+              {serverStatus === 'checking' && '检查服务器状态...'}
+              {serverStatus === 'online' && '服务器已连接'}
+              {serverStatus === 'offline' && '服务器未连接'}
+            </span>
+            {serverStatus === 'offline' && (
+              <button
+                className="reconnect-button"
+                onClick={handleReconnect}
+                disabled={isReconnecting}
+              >
+                {isReconnecting ? '重连中...' : '重新连接'}
+              </button>
+            )}
+          </div>
         </div>
-      </header>
 
-      <main className="main" style={{ padding: '30px 0' }}>
-        <div className="container" style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 20px' }}>
-          {!showChat ? (
-            // 文档处理界面
-            !result ? (
-              <div className="card" style={{ 
-                backgroundColor: '#f8fafc', 
-                borderRadius: '12px', 
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-                padding: '30px',
-                transition: 'all 0.3s ease'
-              }}>
-                <h2 style={{ 
-                  fontSize: '24px', 
-                  marginBottom: '20px', 
-                  color: '#1e40af',
-                  borderBottom: '2px solid #dbeafe',
-                  paddingBottom: '12px'
-                }}>
-                  文档纠错服务
-                </h2>
-                <p style={{ marginBottom: '20px', color: '#4b5563' }}>
-                  上传您的文档，系统将自动进行公文格式与内容纠错，支持.docx格式文件。
-                </p>
-                <div 
-                  className="upload-area"
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                      handleFileSelect(e.dataTransfer.files[0]);
+        <div className="three-column-layout">
+          {/* 左侧面板：上传文档和文档历史 */}
+          <div className="left-panel">
+            {/* 上传文档部分 */}
+            <div className="left-panel-section">
+              <h3>上传文档</h3>
+              <div
+                className="upload-area-small"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                    handleFileSelect(e.dataTransfer.files[0]);
+                  }
+                }}
+              >
+                <div className="upload-icon-small">📄</div>
+                <p>拖拽文件或点击上传</p>
+                <input
+                  type="file"
+                  id="fileInput"
+                  accept=".docx"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files[0]) {
+                      handleFileSelect(e.target.files[0]);
                     }
                   }}
-                  style={{
-                    border: '2px dashed #93c5fd',
-                    borderRadius: '8px',
-                    padding: '40px',
-                    textAlign: 'center',
-                    backgroundColor: '#eff6ff',
-                    marginBottom: '20px',
-                    cursor: 'pointer',
-                    transition: 'all 0.3s ease'
-                  }}
+                />
+                <button
+                  className="button small"
+                  onClick={() => document.getElementById('fileInput')?.click()}
+                  disabled={isLoading}
                 >
-                  <div className="upload-icon" style={{ fontSize: '48px', marginBottom: '16px' }}>📄</div>
-                  <p style={{ fontSize: '16px', marginBottom: '24px', color: '#3b82f6' }}>拖拽文件到这里或点击上传</p>
-                  <input
-                    type="file"
-                    id="fileInput"
-                    accept=".docx"
-                    style={{ display: 'none' }}
-                    onChange={(e) => {
-                      if (e.target.files && e.target.files[0]) {
-                        handleFileSelect(e.target.files[0]);
-                      }
-                    }}
-                  />
-                  <button 
-                    className="button"
-                    onClick={() => document.getElementById('fileInput')?.click()}
-                    disabled={isLoading}
-                    style={{
-                      backgroundColor: '#2563eb',
-                      color: 'white',
-                      border: 'none',
-                      padding: '12px 24px',
-                      borderRadius: '6px',
-                      fontSize: '16px',
-                      cursor: 'pointer',
-                      fontWeight: 'bold',
-                      transition: 'all 0.3s ease',
-                      opacity: isLoading ? 0.7 : 1
-                    }}
-                  >
-                    选择文件
-                  </button>
-                </div>
-                
-                {file && (
-                  <div className="file-info" style={{
-                    backgroundColor: '#e0f2fe',
-                    padding: '12px 16px',
-                    borderRadius: '6px',
-                    fontSize: '14px',
-                    marginBottom: '20px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <span style={{ marginRight: '8px', fontSize: '18px' }}>📎</span>
+                  选择文件
+                </button>
+              </div>
+
+              {file && !isLoading && (
+                <div className="file-actions">
+                  <div className="file-info-small">
                     已选择: {file.name} ({formatFileSize(file.size)})
                   </div>
-                )}
-                
-                {error && <div className="error" style={{
-                  backgroundColor: '#fee2e2',
-                  color: '#b91c1c',
-                  padding: '12px 16px',
-                  borderRadius: '6px',
-                  marginBottom: '20px'
-                }}>{error}</div>}
-                
-                <div className="button-container" style={{ textAlign: 'center', marginTop: '30px' }}>
                   <button
-                    className="button primary"
-                    onClick={handleProcessFile}
-                    disabled={!file || isLoading}
-                    style={{
-                      backgroundColor: '#1d4ed8',
-                      color: 'white',
-                      border: 'none',
-                      padding: '14px 30px',
-                      borderRadius: '8px',
-                      fontSize: '16px',
-                      cursor: 'pointer',
-                      fontWeight: 'bold',
-                      boxShadow: '0 4px 6px rgba(29, 78, 216, 0.1)',
-                      transition: 'all 0.3s ease',
-                      opacity: !file || isLoading ? 0.7 : 1
-                    }}
+                    className="button primary small"
+                    onClick={handleUploadFile}
+                    disabled={!file}
                   >
-                    {isLoading ? '处理中...' : '处理文档'}
+                    上传文档
                   </button>
                 </div>
-                
-                {isLoading && (
-                  <div className="loader" style={{ 
-                    textAlign: 'center', 
-                    marginTop: '20px',
-                    padding: '20px',
-                    backgroundColor: '#f0f9ff',
-                    borderRadius: '8px'
-                  }}>
-                    <div className="spinner" style={{
-                      display: 'inline-block',
-                      width: '30px',
-                      height: '30px',
-                      border: '3px solid rgba(59, 130, 246, 0.2)',
-                      borderRadius: '50%',
-                      borderTop: '3px solid #3b82f6',
-                      animation: 'spin 1s linear infinite',
-                      marginBottom: '15px'
-                    }}></div>
-                    <p style={{ color: '#3b82f6' }}>正在处理文档，请稍候...</p>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="card" style={{ 
-                backgroundColor: '#f8fafc', 
-                borderRadius: '12px', 
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-                padding: '30px'
-              }}>
-                <h2 style={{ 
-                  fontSize: '24px', 
-                  marginBottom: '20px', 
-                  color: '#1e40af',
-                  borderBottom: '2px solid #dbeafe',
-                  paddingBottom: '12px'
-                }}>处理结果</h2>
-                <div className="result-tabs" style={{
-                  display: 'flex',
-                  marginBottom: '20px',
-                  borderBottom: '1px solid #e5e7eb',
-                  paddingBottom: '10px'
-                }}>
-                  <button 
-                    className={showComparison ? "active" : ""}
-                    onClick={() => setShowComparison(true)}
-                    style={{
-                      padding: '8px 16px',
-                      marginRight: '10px',
-                      backgroundColor: showComparison ? '#3b82f6' : '#e5e7eb',
-                      color: showComparison ? 'white' : '#4b5563',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontWeight: showComparison ? 'bold' : 'normal',
-                      transition: 'all 0.3s ease'
-                    }}
-                  >
-                    对比视图
-                  </button>
-                  <button 
-                    className={!showComparison ? "active" : ""}
-                    onClick={() => setShowComparison(false)}
-                    style={{
-                      padding: '8px 16px',
-                      backgroundColor: !showComparison ? '#3b82f6' : '#e5e7eb',
-                      color: !showComparison ? 'white' : '#4b5563',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontWeight: !showComparison ? 'bold' : 'normal',
-                      transition: 'all 0.3s ease'
-                    }}
-                  >
-                    仅结果
-                  </button>
-                </div>
-                
-                {showComparison && originalContent ? (
-                  <div className="comparison-view">
-                    <div className="comparison-container" style={{
-                      display: 'grid',
-                      gridTemplateColumns: '1fr 1fr',
-                      gap: '20px',
-                      marginBottom: '30px'
-                    }}>
-                      <div className="original-content" style={{
-                        backgroundColor: '#f1f5f9',
-                        padding: '20px',
-                        borderRadius: '8px',
-                        border: '1px solid #e2e8f0'
-                      }}>
-                        <h3 style={{
-                          fontSize: '18px',
-                          marginBottom: '15px',
-                          color: '#475569',
-                          display: 'flex',
-                          alignItems: 'center'
-                        }}>
-                          <span style={{ marginRight: '8px', fontSize: '18px' }}>📄</span>
-                          原始文档
-                        </h3>
-                        <div className="content-box" style={{
-                          backgroundColor: 'white',
-                          padding: '15px',
-                          borderRadius: '6px',
-                          maxHeight: '500px',
-                          overflowY: 'auto',
-                          border: '1px solid #e2e8f0',
-                          lineHeight: '1.6',
-                          fontSize: '14px'
-                        }}>
-                          {originalContent}
-                        </div>
-                      </div>
-                      <div className="corrected-content" style={{
-                        backgroundColor: '#ecfdf5',
-                        padding: '20px',
-                        borderRadius: '8px',
-                        border: '1px solid #d1fae5'
-                      }}>
-                        <h3 style={{
-                          fontSize: '18px',
-                          marginBottom: '15px',
-                          color: '#065f46',
-                          display: 'flex',
-                          alignItems: 'center'
-                        }}>
-                          <span style={{ marginRight: '8px', fontSize: '18px' }}>✓</span>
-                          纠错后文档
-                        </h3>
-                        <div className="content-box" style={{
-                          backgroundColor: 'white',
-                          padding: '15px',
-                          borderRadius: '6px',
-                          maxHeight: '500px',
-                          overflowY: 'auto',
-                          border: '1px solid #d1fae5',
-                          lineHeight: '1.6',
-                          fontSize: '14px'
-                        }}>
-                          {formatResponse(result)}
-                        </div>
-                      </div>
+              )}
+
+              {isLoading && (
+                <div className="loader-small">
+                  <div className="spinner-small"></div>
+                  <div className="upload-progress">
+                    <p>上传中... {uploadProgress}%</p>
+                    <div className="progress-bar">
+                      <div
+                        className="progress-fill"
+                        style={{ width: `${uploadProgress}%` }}
+                      ></div>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {error && <div className="error-small">{error}</div>}
+            </div>
+
+            {/* 文档历史部分 */}
+            <div className="left-panel-section">
+              <h3>文档历史</h3>
+              <div className="document-list">
+                {documentHistory.length === 0 ? (
+                  <div className="no-documents">
+                    <p>无历史文档</p>
                   </div>
                 ) : (
-                  <div className="result-content" style={{
-                    backgroundColor: '#ecfdf5',
-                    padding: '25px',
-                    borderRadius: '8px',
-                    border: '1px solid #d1fae5',
-                    marginBottom: '30px',
-                    lineHeight: '1.6'
-                  }}>
-                    {formatResponse(result)}
-                  </div>
+                  documentHistory.map((doc) => (
+                    <div
+                      key={doc.id}
+                      className={`document-item ${activeDocument === doc.id ? 'active' : ''}`}
+                      onClick={() => handleSelectDocument(doc.id)}
+                    >
+                      <div className="document-title">{doc.name}</div>
+                      <div className="document-date">
+                        {doc.timestamp.toLocaleDateString()} {doc.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                      <div className="document-item-actions">
+                        <button
+                          className="delete-button"
+                          onClick={(event) => handleDeleteDocument(event, doc.id)}
+                          title="删除文档"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ))
                 )}
-                
-                <div className="button-container" style={{ 
-                  display: 'flex',
-                  justifyContent: 'center',
-                  gap: '15px',
-                  marginTop: '20px'
-                }}>
-                  <a 
-                    href={`http://${SERVER_IP}:${API_PORT}/api/download-result`}
-                    className="button primary"
-                    download
-                    style={{
-                      backgroundColor: '#047857',
-                      color: 'white',
-                      padding: '12px 24px',
-                      borderRadius: '8px',
-                      textDecoration: 'none',
-                      fontWeight: 'bold',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      transition: 'all 0.3s ease'
-                    }}
-                  >
-                    <span style={{ marginRight: '8px', fontSize: '18px' }}>⬇️</span>
-                    下载处理后文档
-                  </a>
-                  <button
-                    className="button secondary"
-                    onClick={handleReset}
-                    style={{
-                      backgroundColor: '#e2e8f0',
-                      color: '#475569',
-                      border: 'none',
-                      padding: '12px 24px',
-                      borderRadius: '8px',
-                      fontWeight: 'bold',
-                      cursor: 'pointer',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      transition: 'all 0.3s ease'
-                    }}
-                  >
-                    <span style={{ marginRight: '8px', fontSize: '18px' }}>⟲</span>
-                    上传新文档
-                  </button>
-                </div>
-              </div>
-            )
-          ) : (
-            // 聊天问答界面
-            <div className="card" style={{ 
-              backgroundColor: '#f8fafc', 
-              borderRadius: '12px', 
-              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-              padding: '30px',
-              minHeight: '600px',
-              display: 'flex',
-              flexDirection: 'column'
-            }}>
-              <h2 style={{ 
-                fontSize: '24px', 
-                marginBottom: '20px', 
-                color: '#1e40af',
-                borderBottom: '2px solid #dbeafe',
-                paddingBottom: '12px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                <span style={{ marginRight: '10px', fontSize: '24px' }}>💬</span>
-                智能聊天助手
-              </h2>
-              <div className="chat-container" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                <div className="chat-messages" style={{ 
-                  flex: 1, 
-                  overflowY: 'auto', 
-                  marginBottom: '20px',
-                  padding: '15px',
-                  backgroundColor: '#ffffff',
-                  borderRadius: '8px',
-                  border: '1px solid #e5e7eb',
-                  minHeight: '400px',
-                  maxHeight: '500px'
-                }}>
-                  {chatHistory.length === 0 ? (
-                    <div className="welcome-message" style={{
-                      textAlign: 'center',
-                      padding: '40px 20px',
-                      backgroundColor: '#f0f9ff',
-                      borderRadius: '8px',
-                      marginBottom: '20px'
-                    }}>
-                      <h3 style={{ 
-                        fontSize: '20px', 
-                        marginBottom: '15px',
-                        color: '#0369a1'
-                      }}>👋 欢迎使用公文纠错聊天助手</h3>
-                      <p style={{ marginBottom: '15px', color: '#0c4a6e' }}>您可以直接输入问题进行咨询，或者提供文本进行公文纠错。</p>
-                      <p style={{ marginBottom: '10px', color: '#0c4a6e', fontWeight: 'bold' }}>例如：</p>
-                      <ul style={{ 
-                        listStyleType: 'none', 
-                        padding: '0',
-                        margin: '0 auto',
-                        maxWidth: '400px',
-                        textAlign: 'left'
-                      }}>
-                        <li style={{ 
-                          padding: '10px 15px', 
-                          backgroundColor: '#bae6fd', 
-                          borderRadius: '6px', 
-                          marginBottom: '10px',
-                          color: '#0c4a6e'
-                        }}>请对以下内容进行公文纠错：</li>
-                        <li style={{ 
-                          padding: '10px 15px', 
-                          backgroundColor: '#bae6fd', 
-                          borderRadius: '6px', 
-                          marginBottom: '10px',
-                          color: '#0c4a6e'
-                        }}>这份文件格式有哪些问题？</li>
-                        <li style={{ 
-                          padding: '10px 15px', 
-                          backgroundColor: '#bae6fd', 
-                          borderRadius: '6px',
-                          color: '#0c4a6e'
-                        }}>如何写好一份会议记录？</li>
-                      </ul>
-                    </div>
-                  ) : (
-                    chatHistory.map((msg, index) => (
-                      <div 
-                        key={index} 
-                        className={`chat-message ${msg.role === 'assistant' ? 'assistant-message' : 'user-message'}`}
-                        style={{
-                          marginBottom: '15px',
-                          maxWidth: '80%',
-                          alignSelf: msg.role === 'assistant' ? 'flex-start' : 'flex-end',
-                          marginLeft: msg.role === 'assistant' ? '0' : 'auto',
-                          marginRight: msg.role === 'assistant' ? 'auto' : '0',
-                          backgroundColor: msg.role === 'assistant' ? '#f3f4f6' : '#dbeafe',
-                          padding: '15px',
-                          borderRadius: msg.role === 'assistant' ? '0 12px 12px 12px' : '12px 0 12px 12px',
-                          position: 'relative',
-                          boxShadow: '0 2px 5px rgba(0,0,0,0.05)'
-                        }}
-                      >
-                        {msg.role === 'assistant' && (
-                          <div style={{ 
-                            position: 'absolute', 
-                            top: '-20px',
-                            left: '10px',
-                            backgroundColor: '#3b82f6',
-                            color: 'white',
-                            padding: '2px 10px',
-                            borderRadius: '10px',
-                            fontSize: '12px',
-                            fontWeight: 'bold'
-                          }}>
-                            助手
-                          </div>
-                        )}
-                        {msg.role === 'user' && (
-                          <div style={{ 
-                            position: 'absolute', 
-                            top: '-20px',
-                            right: '10px',
-                            backgroundColor: '#6366f1',
-                            color: 'white',
-                            padding: '2px 10px',
-                            borderRadius: '10px',
-                            fontSize: '12px',
-                            fontWeight: 'bold'
-                          }}>
-                            用户
-                          </div>
-                        )}
-                        <div className="message-content" style={{ lineHeight: '1.5' }}>
-                          {msg.isFeedbackProcessing ? (
-                            <div className="feedback-processing">
-                              <div className="spinner"></div>
-                              <span>{msg.content}</span>
-                            </div>
-                          ) : (
-                            formatResponse(msg.content)
-                          )}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                  {isChatLoading && (
-                    <div className="chat-message assistant-message" style={{
-                      backgroundColor: '#f3f4f6',
-                      padding: '15px',
-                      borderRadius: '0 12px 12px 12px',
-                      marginBottom: '15px',
-                      maxWidth: '60%'
-                    }}>
-                      <div className="feedback-processing">
-                        <div className="spinner"></div>
-                        <span>正在处理您的请求...</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <div className="chat-actions">
-                  {findLastCorrectionText(chatHistory) && (
-                    <div className="special-actions" style={{
-                      marginBottom: '15px',
-                      display: 'flex',
-                      justifyContent: 'flex-end'
-                    }}>
-                      <button 
-                        className="button secondary small"
-                        onClick={handleSendMessage}
-                        disabled={isChatLoading}
-                        style={{
-                          backgroundColor: '#3b82f6',
-                          color: 'white',
-                          border: 'none',
-                          padding: '8px 16px',
-                          borderRadius: '6px',
-                          fontSize: '14px',
-                          cursor: 'pointer',
-                          opacity: isChatLoading ? 0.7 : 1
-                        }}
-                      >
-                        发送消息
-                      </button>
-                    </div>
-                  )}
-                </div>
-                <div className="chat-input" style={{
-                  display: 'flex',
-                  gap: '10px',
-                  backgroundColor: '#ffffff',
-                  padding: '15px',
-                  borderRadius: '8px',
-                  border: '1px solid #e5e7eb'
-                }}>
-                  <input
-                    type="text"
-                    value={message}
-                    onChange={(e) => setMessage(e.target.value)}
-                    placeholder="输入您的问题..."
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSendMessage();
-                      }
-                    }}
-                    disabled={isChatLoading}
-                    style={{
-                      flex: 1,
-                      padding: '12px 15px',
-                      borderRadius: '6px',
-                      border: '1px solid #d1d5db',
-                      fontSize: '16px',
-                      outline: 'none',
-                      transition: 'border-color 0.3s'
-                    }}
-                    className="chat-input-field"
-                  />
-                  <button
-                    className="button primary"
-                    onClick={handleSendMessage}
-                    disabled={isChatLoading || !message.trim()}
-                    style={{
-                      backgroundColor: '#3b82f6',
-                      color: 'white',
-                      border: 'none',
-                      padding: '0 20px',
-                      borderRadius: '6px',
-                      fontSize: '16px',
-                      cursor: 'pointer',
-                      fontWeight: 'bold',
-                      opacity: isChatLoading || !message.trim() ? 0.7 : 1,
-                      transition: 'all 0.3s ease'
-                    }}
-                  >
-                    发送
-                  </button>
-                </div>
               </div>
             </div>
-          )}
+          </div>
+
+          {/* 中间面板 - 显示处理后的文档内容 */}
+          <div className="middle-panel">
+            <div className="word-container">
+              {originalContent ? (
+                <>
+                  <div className="word-document">
+                    <div className="word-page">
+                      {processedDocument ? formatResponse(processedDocument) : originalContent}
+                    </div>
+                  </div>
+
+                  <div className="word-document-actions">
+                    {processedDocument && (
+                      <>
+                        <a
+                          href={`http://${SERVER_IP}:${API_PORT}/api/download-result`}
+                          className="button primary small"
+                          download
+                        >
+                          下载处理后文档
+                        </a>
+                        <button
+                          className="button secondary small"
+                          onClick={handleSaveDocument}
+                          disabled={isSaving || !activeDocument}
+                        >
+                          {isSaving ? '保存中...' : '更新文档'}
+                        </button>
+                      </>
+                    )}
+                    <button
+                      className="button secondary small"
+                      onClick={handleReset}
+                    >
+                      上传新文档
+                    </button>
+                    <button
+                      className="button warning small"
+                      onClick={clearAllStoredData}
+                      title="清除所有本地存储的数据"
+                    >
+                      清除全部数据
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="word-document empty">
+                  <p>请上传或选择文档查看内容</p>
+                  {documentHistory.length > 0 && (
+                    <button
+                      className="button warning small"
+                      onClick={clearAllStoredData}
+                      title="清除所有本地存储的数据"
+                    >
+                      清除本地数据
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 右侧面板 - 聊天对话框 */}
+          <div className="right-panel">
+            <div className="chat-container">
+              <div className="chat-messages" ref={chatMessagesRef}>
+                {chatHistory.length === 0 ? (
+                  <div className="chat-welcome">
+                    <p>欢迎使用智能助手，您可以直接提问或上传文档后进行文档相关操作</p>
+                  </div>
+                ) : (
+                  chatHistory.map((msg, index) => (
+                    <div
+                      key={index}
+                      className={`chat-message ${msg.role === 'user' ? 'user-message' : 'assistant-message'}`}
+                    >
+                      <div className="message-content">{formatResponse(msg.content)}</div>
+                    </div>
+                  ))
+                )}
+                {isChatLoading && (
+                  <div className="chat-message assistant-message">
+                    <div className="typing-indicator">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="chat-input">
+                <input
+                  type="text"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  placeholder={originalContent ? "输入文档处理指令..." : "输入您的问题..."}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendMessage();
+                    }
+                  }}
+                  disabled={isChatLoading}
+                />
+                <button
+                  className="button primary"
+                  onClick={handleSendMessage}
+                  disabled={isChatLoading || !message.trim()}
+                >
+                  发送
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
-      </main>
-      <style jsx>{`
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-        @keyframes pulse {
-          0%, 100% { opacity: 0.5; transform: scale(0.8); }
-          50% { opacity: 1; transform: scale(1.2); }
-        }
-        .chat-input-field:focus {
-          border-color: #3b82f6 !important;
-          box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-        }
-      `}</style>
-    </div>
+      </div>
+    </main>
   );
 }
