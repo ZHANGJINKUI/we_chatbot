@@ -65,8 +65,6 @@
    ```bash
    # 原始版本
    cd VUE/vue3-init-demo
-   # 或修改版本
-   cd VUE_change/vue3-init-demo
    ```
 
 2. 安装依赖：
