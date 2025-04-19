@@ -1,0 +1,60 @@
+[
+  {
+    "id": "62397392-11df-4450-91ec-9d92e7e98a44",
+    "title": "1",
+    "messages": [
+      {
+        "role": "system",
+        "id": "0",
+        "createAt": 1744800816007,
+        "content": "Hello, I'm your AI assistant.",
+        "status": "complete"
+      },
+      {
+        "role": "user",
+        "id": "62397392-11df-4450-91ec-9d92e7e98a4417448010459830",
+        "createAt": 1744801045983,
+        "content": "1",
+        "status": "complete"
+      },
+      {
+        "role": "assistant",
+        "id": "62397392-11df-4450-91ec-9d92e7e98a4417448010459831",
+        "createAt": 1744801045983,
+        "content": "我是小公，您的智能公文助手！有什么可以帮您的吗？",
+        "status": "complete"
+      },
+      {
+        "role": "user",
+        "id": "62397392-11df-4450-91ec-9d92e7e98a4417448010808300",
+        "createAt": 1744801080830,
+        "content": "将上传的文档进行公文纠错",
+        "status": "complete"
+      },
+      {
+        "role": "assistant",
+        "id": "62397392-11df-4450-91ec-9d92e7e98a4417448010808301",
+        "createAt": 1744801080830,
+        "content": "请先上传Word文档再进行完整文档的公文纠错。如果您只想纠正特定句子或段落，请直接输入要纠正的内容，例如\"纠错：这是一段需要纠错的文字\"。",
+        "status": "complete"
+      },
+      {
+        "role": "user",
+        "id": "62397392-11df-4450-91ec-9d92e7e98a4417448010985730",
+        "createAt": 1744801098573,
+        "content": "将上传的文档进行公文纠错\n\n",
+        "status": "complete"
+      },
+      {
+        "role": "assistant",
+        "id": "62397392-11df-4450-91ec-9d92e7e98a4417448010985731",
+        "createAt": 1744801098573,
+        "content": "请先上传Word文档再进行完整文档的公文纠错。如果您只想纠正特定句子或段落，请直接输入要纠正的内容，例如\"纠错：这是一段需要纠错的文字\"。",
+        "status": "complete"
+      }
+    ],
+    "createAt": 1744800815982,
+    "userid": "20250011",
+    "username": "20250011"
+  }
+]
