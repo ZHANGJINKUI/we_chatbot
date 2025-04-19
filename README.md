@@ -94,7 +94,7 @@
 
 1. 确保你在前端项目目录中：
    ```bash
-   cd VUE/vue3-init-demo  # 或 cd VUE_change/vue3-init-demo
+   cd VUE/vue3-init-demo 
    ```
 
 2. 启动开发服务器：
