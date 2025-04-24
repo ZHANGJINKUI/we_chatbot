@@ -1,0 +1,24 @@
+.container {
+  display: flex; // 关键， flex布局
+  flex-direction: column; // 关键，三块主题column摆放。
+  height: 100vh; // 关键，设置高度为可见高度的100%；
+  overflow: hidden;
+  //   text-align: center; // 文字居中
+}
+
+.header {
+  width: 100%;
+  //   background: lightblue;
+}
+
+.main {
+  flex: 1; // 关键， 填充剩余空间
+  width: 100%;
+  //   background: lightyellow;
+  overflow-y: auto; // 关键， 超出部分滚动
+}
+
+.footer {
+  width: 100%;
+  //   background: lightpink;
+}

@@ -1,0 +1,1126 @@
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+import os
+import tempfile
+import sys
+import shutil
+import json
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel
+# 注释掉数据库导入
+# from admin.auth.routes import router as auth_router
+# from admin.database import Base, engine
+# 导入DocProcessor和相关组件
+from my_agent.utils.shared.doc_processor import DocProcessor
+from my_agent.utils.shared.intent_classifier import IntentClassifier
+from langchain_openai import ChatOpenAI
+import os
+from dotenv import load_dotenv
+# 添加当前目录到系统路径
+current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, current_dir)
+import re
+import asyncio
+from io import BytesIO
+from datetime import datetime
+from pathlib import Path
+# 导入agent_tools中的MCP公文纠错模块 - 更新导入方式
+from my_agent.agent_tools import csc as mcp_csc
+
+# 全局变量，用于存储最近上传的文档
+last_uploaded_document = None
+# 全局变量，用于存储当前文件列表
+file_list = []
+# 全局变量，记录用户会话是否进入强制公文纠错模式
+forced_correction_mode = {}
+
+# 首先创建FastAPI应用实例
+app = FastAPI(title="文档处理API")
+
+# 配置CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有源
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 定义临时文件路径
+TEMP_DIR = tempfile.gettempdir()
+
+# 加载环境变量和初始化模型
+load_dotenv()
+deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
+deepseek_base_url = os.getenv("DEEPSEEK_API_BASE")
+os.environ["OPENAI_API_KEY"] = deepseek_api_key
+os.environ["OPENAI_API_BASE"] = deepseek_base_url
+llm = ChatOpenAI(model="deepseek-chat")
+
+# 闲聊计数器 - 全局变量
+chat_counter = {}
+
+# 定义请求和响应模型
+class UploadDocumentResponse(BaseModel):
+    document_id: str
+    content: str
+    message: str
+
+class ChatRequest(BaseModel):
+    message: str
+    document_content: str = None  # 新增文档内容字段
+    chat_history: list = []
+
+class ChatResponse(BaseModel):
+    response: str
+    chat_history: list
+    processed_document: str = None  # 新增处理后的文档内容字段
+
+class SaveDocumentRequest(BaseModel):
+    document_id: str
+    content: str
+    filename: str = "processed_document.docx"
+
+# 添加登录请求和响应模型
+class LoginRequest(BaseModel):
+    userid: str
+    password: str
+
+class LoginResponseData(BaseModel):
+    user: dict
+    token: str
+
+class LoginResponse(BaseModel):
+    code: int
+    data: LoginResponseData
+    msg: str
+
+# 定义路由
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the User Management System"}
+
+# 添加健康检查API
+@app.get("/api/health-check")
+async def health_check():
+    """健康检查端点"""
+    return {
+        "code": 200,
+        "data": {"status": "ok"},
+        "msg": "服务器连接正常"
+    }
+
+# 添加简单的登录API端点
+@app.post("/api/login", response_model=LoginResponse)
+async def login(login_request: LoginRequest):
+    """处理用户登录请求"""
+    # 这里简化处理，只要提供了用户名和密码就认为登录成功
+    if login_request.userid and login_request.password:
+        # 返回模拟的用户信息和token，包装为前端期望的格式
+        response_data = {
+            "user": {
+                "userid": login_request.userid,
+                "username": login_request.userid,
+                "role": "user"
+            },
+            "token": "mock_token_123456789"
+        }
+        
+        # 包装为前端期望的格式
+        return {
+            "code": 200,
+            "data": response_data,
+            "msg": "登录成功"
+        }
+    else:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+# 修改文档上传函数，添加对file为None的处理
+@app.post("/api/upload-document")
+async def upload_document(file: UploadFile = None):
+    """上传Word文档并返回内容，不进行处理"""
+    # 存储最近上传的文档内容
+    global last_uploaded_document
+    
+    # 如果file为None，返回上次上传的文档内容
+    if file is None:
+        if not last_uploaded_document:
+            raise HTTPException(status_code=404, detail="没有已上传的文档")
+        return last_uploaded_document
+    
+    if not file.filename.endswith(('.docx')):
+        raise HTTPException(status_code=400, detail="只支持.docx格式文件")
+    
+    try:
+        # 读取文件内容到内存
+        file_content = await file.read()
+        
+        # 直接从内存流读取文档，避免临时文件I/O开销
+        content = DocProcessor.load_doc_stream(file_content, file.filename)
+        
+        # 生成唯一文档ID
+        document_id = str(hash(content + file.filename))
+        
+        # 保存最近上传的文档
+        last_uploaded_document = {
+            "document_id": document_id,
+            "content": content,
+            "original_content": content,
+            "filename": file.filename,
+            "message": "文档上传成功，请在聊天框中输入处理指令"
+        }
+        
+        return last_uploaded_document
+        
+    except Exception as e:
+        print(f"处理文档时出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"处理文档时出错: {str(e)}")
+
+@app.post("/api/process-document", deprecated=True)
+async def process_document_api(file: UploadFile = File(...)):
+    """上传并处理Word文档 (已弃用，保留兼容)"""
+    return await upload_document(file)
+
+# 修改聊天接口，处理带有文档内容的请求
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_endpoint(chat_request: ChatRequest, request: Request):
+    """处理聊天请求，支持文档处理"""
+    try:
+        print(f"Received chat request: {chat_request.message[:100]}...")
+        
+        # 准备消息历史
+        messages = chat_request.chat_history.copy()
+        
+        # 检查是否有文档内容，如果没有，尝试从最近上传的文档中获取
+        document_content = chat_request.document_content
+        if (document_content is None or document_content.strip() == "") and last_uploaded_document:
+            document_content = last_uploaded_document["content"]
+            print(f"使用最近上传的文档内容，长度: {len(document_content)}")
+        
+        has_document = document_content is not None and document_content.strip() != ""
+        
+        # 进行意图分类
+        intent = IntentClassifier.classify(chat_request.message)
+        print(f"Intent classified as: {intent}")
+        
+        # 获取客户端IP地址作为会话ID
+        client_ip = request.client.host
+        session_id = f"session_{client_ip}"
+        print(f"Using session ID: {session_id}")
+        
+        # 初始化会话计数器
+        if session_id not in chat_counter:
+            chat_counter[session_id] = 0
+            print(f"Initialized chat counter for {session_id}")
+            
+        # 如果是聊天意图，增加计数
+        if intent == "chat":
+            chat_counter[session_id] += 1
+            print(f"Increased chat counter for {session_id} to {chat_counter[session_id]}")
+            
+        # 检查是否超过闲聊次数限制
+        if intent == "chat" and chat_counter[session_id] > 3:
+            # 重置意图为强制文档处理
+            intent = "forced_correction"
+            # 添加用户消息到历史
+            messages.append({"role": "user", "content": chat_request.message})
+            # 添加系统消息，引导用户回到公文纠错
+            guidance_message = "您已经闲聊超过3次，请回到公文纠错相关任务。您可以尝试输入「纠错」、「润色」等指令来处理您的文档。"
+            messages.append({"role": "assistant", "content": guidance_message})
+            
+            return {
+                "response": guidance_message,
+                "chat_history": messages,
+                "processed_document": None
+            }
+            
+        # 根据意图处理
+        if intent in ["correction", "writing", "recorrection", "forced_correction"]:
+            # 检查是否有文档内容
+            if not has_document:
+                # 文档内容缺失，提示用户上传文档
+                messages.append({"role": "user", "content": chat_request.message})
+                no_doc_message = "请先上传Word文档再进行公文纠错。您可以点击左侧面板的「上传文档」按钮上传文件。"
+                messages.append({"role": "assistant", "content": no_doc_message})
+                
+                return {
+                    "response": no_doc_message,
+                    "chat_history": messages,
+                    "processed_document": None
+                }
+            
+            # 修改为使用MCP协议封装的CSC纠错服务
+            print("使用MCP协议的CSC服务处理文档...")
+            
+            # 调用MCP服务进行文档纠错
+            csc_result = mcp_csc(document_content)
+            
+            if csc_result["status"] == "success":
+                # 获取处理后的文档内容
+                if csc_result.get("modified", False):
+                    processed_document = csc_result["corrected_text"]
+                    processing_message = f"文档纠错完成，共进行了以下修改：\n{csc_result.get('changes', '未提供详细修改说明')}"
+                else:
+                    processed_document = document_content
+                    processing_message = csc_result.get("message", "文档未发现需要纠错的内容，已保持原文。")
+                
+                # 将用户消息添加到聊天历史
+                messages.append({"role": "user", "content": chat_request.message})
+                
+                # 将处理结果添加到聊天历史
+                success_message = f"已完成文档纠错。{processing_message}"
+                messages.append({"role": "assistant", "content": success_message})
+                
+                # 保存处理后的文档到全局变量
+                if last_uploaded_document:
+                    last_uploaded_document["processed_content"] = processed_document
+                
+                # 返回处理结果和更新后的聊天历史
+                return {
+                    "response": success_message,
+                    "chat_history": messages,
+                    "processed_document": processed_document
+                }
+            else:
+                # 处理失败，回退到原始的LLM处理方式
+                print("MCP服务处理失败，回退到LLM处理...")
+                error_message = csc_result.get("message", "MCP服务处理失败")
+                print(f"错误: {error_message}")
+                
+            # 构建包含文档内容的系统提示
+            system_prompt = "你是一个专业的文档处理助手。请根据用户的指令处理以下文档内容。"
+            
+            # 将文档内容和用户指令组合成完整提示
+            full_prompt = f"文档内容:\n{document_content}\n\n用户指令:\n{chat_request.message}"
+            
+            # 准备消息序列
+            doc_messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": full_prompt}
+            ]
+            
+            # 调用模型处理文档
+            print("转为调用大语言模型处理文档...")
+            response = llm.invoke(doc_messages)
+            
+            # 将用户消息添加到聊天历史
+            messages.append({"role": "user", "content": chat_request.message})
+            
+            # 将模型响应添加到聊天历史
+            fallback_message = "MCP服务暂时不可用，已使用备用方法处理您的文档。处理结果已显示在中间区域。"
+            messages.append({"role": "assistant", "content": fallback_message})
+            
+            # 保存处理后的文档到全局变量
+            if last_uploaded_document:
+                last_uploaded_document["processed_content"] = response.content
+            
+            # 返回处理结果和更新后的聊天历史
+            return {
+                    "response": fallback_message,
+                "chat_history": messages,
+                    "processed_document": response.content
+            }
+        else:
+            # 普通聊天处理
+            # 添加用户新消息
+            messages.append({"role": "user", "content": chat_request.message})
+            
+            # 构建系统提示
+            system_prompt = """你是小公，一个智能公文助手。
+当用户询问你的身份、名字、是谁、介绍自己等类似问题时，必须回答：
+"我是小公，您的智能公文助手！"
+
+请以自然、友好的方式回答用户的其他问题。
+记住，不要透露你是AI、大模型或DeepSeek Chat，而应始终以我是小公身份回答。"""
+            
+            # 添加系统消息到开始
+            full_messages = [{"role": "system", "content": system_prompt}] + messages
+            
+            try:
+                # 调用模型生成回复
+                response = llm.invoke(full_messages)
+                
+                # 添加助手回复到历史
+                messages.append({"role": "assistant", "content": response.content})
+                
+                # 返回结果
+                return {
+                    "response": response.content,
+                    "chat_history": messages,
+                    "processed_document": None
+                }
+            except Exception as e:
+                print(f"模型调用出错: {str(e)}")
+                error_message = "处理您的请求时出错，请稍后再试。"
+                messages.append({"role": "assistant", "content": error_message})
+                
+            return {
+                    "response": error_message,
+                "chat_history": messages,
+                    "processed_document": None
+            }
+            
+    except Exception as e:
+        print(f"Chat endpoint error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"处理聊天请求时出错: {str(e)}")
+
+@app.get("/api/download-result")
+async def download_result():
+    """下载处理结果文件"""
+    try:
+        file_path = os.path.join(TEMP_DIR, "processed_document.docx")
+    
+        # 检查文件是否存在
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="处理结果文件不存在")
+    
+    return FileResponse(
+            path=file_path,
+        filename="processed_document.docx",
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"下载文件时出错: {str(e)}")
+
+@app.post("/api/save-document")
+async def save_document(request: SaveDocumentRequest):
+    """保存处理后的文档内容"""
+    try:
+        # 确保有内容要保存
+        if not request.content or not request.content.strip():
+            raise HTTPException(status_code=400, detail="没有可保存的内容")
+            
+        # 将内容保存到临时文件
+        file_path = os.path.join(TEMP_DIR, request.filename)
+        
+        # 使用DocProcessor保存为docx
+        DocProcessor.save_text_to_docx(request.content, file_path)
+        
+        return {"status": "success", "message": "文档已保存", "path": file_path}
+        
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"保存文档时出错: {str(e)}")
+
+# 添加流式聊天接口
+@app.get("/api/stream-chat")
+async def stream_chat(request: Request, message: str, document_content: str = None, chat_history: str = "[]"):
+    """处理聊天请求，返回流式响应"""
+    async def event_generator():
+        try:
+            # 解析聊天历史
+            history = json.loads(chat_history) if chat_history else []
+            
+            # 准备聊天消息
+            messages = history.copy()
+            
+            # 检查是否有文档内容，如果没有，尝试从last_uploaded_document获取
+            global last_uploaded_document, forced_correction_mode
+            has_document = False
+            input_text_for_correction = None
+            
+            # 优先使用传递的document_content参数
+            if document_content and document_content.strip():
+                processed_doc_content = document_content
+                has_document = True
+                print(f"使用传递的document_content，长度: {len(processed_doc_content)}")
+            # 否则检查全局变量
+            elif last_uploaded_document:
+                processed_doc_content = last_uploaded_document.get("content", "")
+                has_document = processed_doc_content and processed_doc_content.strip() != ""
+                print(f"使用last_uploaded_document中的内容，长度: {len(processed_doc_content) if has_document else 0}")
+            else:
+                processed_doc_content = ""
+                print("没有找到文档内容")
+            
+            # 获取客户端IP地址作为会话ID
+            client_ip = request.client.host
+            session_id = f"session_{client_ip}"
+            
+            # 进行意图分类
+            intent = IntentClassifier.classify(message)
+            print(f"Intent classified as: {intent}")
+            
+            # 检查是否处于强制公文纠错模式
+            is_forced_mode = forced_correction_mode.get(session_id, False)
+            
+            # 初始化会话计数器
+            if session_id not in chat_counter:
+                chat_counter[session_id] = 0
+            
+            # 如果是聊天意图，增加计数
+            if intent == "chat":
+                chat_counter[session_id] += 1
+                print(f"增加闲聊计数器: session {session_id} → {chat_counter[session_id]}")
+                
+                # 检查是否达到闲聊次数限制
+                if chat_counter[session_id] > 3:
+                    # 进入强制公文纠错模式
+                    forced_correction_mode[session_id] = True
+                    is_forced_mode = True
+                    print(f"进入强制公文纠错模式: session {session_id}")
+            
+            # 如果是公文纠错相关意图，重置闲聊计数
+            if intent in ["correction", "writing", "recorrection"]:
+                chat_counter[session_id] = 0
+                # 如果之前处于强制模式，现在解除
+                if is_forced_mode:
+                    forced_correction_mode[session_id] = False
+                    print(f"退出强制公文纠错模式: session {session_id}")
+            
+            # 如果处于强制公文纠错模式，且不是公文纠错相关意图，强制拒绝回答
+            if is_forced_mode and intent == "chat":
+                guidance_message = "您已经闲聊超过3次，我只能回答公文纠错相关的问题了。请输入与公文处理相关的问题，例如「如何纠错」、「如何润色文档」或直接要求我「对文档进行公文纠错」。"
+                yield f"data: {json.dumps({'content': guidance_message})}\n\n"
+                yield "data: end\n\n"
+                return
+            
+            # 根据意图处理请求
+            if intent in ["correction", "writing", "recorrection", "forced_correction"]:
+                # 检查消息中是否包含需要直接纠错的文本
+                # 检查常见的模式，如"对下面的句子进行公文纠错："、"帮我纠错："等
+                correction_patterns = [
+                    r"对.*句子.*纠错[:：](.+)",
+                    r"纠错[:：](.+)",
+                    r"润色[:：](.+)",
+                    r"修改[:：](.+)",
+                    r"公文纠错[:：](.+)"
+                ]
+                
+                for pattern in correction_patterns:
+                    match = re.search(pattern, message, re.DOTALL)
+                    if match:
+                        input_text_for_correction = match.group(1).strip()
+                        break
+                
+                # 对于一些特殊情况，如果消息不是很长并且不是明确要求处理上传文档的，也可能是要直接纠错
+                if not input_text_for_correction and not has_document and len(message) > 15 and "上传" not in message and "文档" not in message:
+                    # 直接使用整个消息作为要纠错的内容
+                    input_text_for_correction = message
+                
+                # 情况1: 用户提供了要直接纠错的文本
+                if input_text_for_correction:
+                    # 发送处理状态
+                    yield f"data: {json.dumps({'content': '正在处理您提供的文本...'})}\n\n"
+                    
+                    # 使用MCP CSC服务处理文本
+                    print("使用MCP CSC服务处理文本...")
+                    csc_result = mcp_csc(input_text_for_correction)
+                    
+                    if csc_result["status"] == "success":
+                        if csc_result.get("modified", False):
+                            corrected_text = csc_result["corrected_text"]
+                            result_message = f"已完成文本纠错。修改如下：\n\n{corrected_text}\n\n修改说明：{csc_result.get('changes', '未提供详细修改说明')}"
+                        else:
+                            corrected_text = input_text_for_correction
+                            result_message = csc_result.get("message", "文本未发现需要纠错的内容，已保持原文。")
+                    else:
+                        # MCP服务失败，回退到LLM处理
+                        print(f"MCP服务处理失败: {csc_result.get('message', '未知错误')}，回退到LLM处理")
+                        
+                        # 使用原来的LLM处理方式
+                        system_prompt = "你是一个专业的公文写作助手，请对下面的文本进行公文纠错和润色，改善语言表达，使其更符合公文规范。"
+                        
+                        doc_messages = [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": f"请对以下文本进行公文纠错:\n\n{input_text_for_correction}"}
+                        ]
+                        
+                        response = llm.invoke(doc_messages)
+                        corrected_text = response.content
+                        result_message = f"MCP服务暂时不可用，已使用备用方法处理。\n\n{corrected_text}"
+                    
+                    yield f"data: {json.dumps({'content': result_message})}\n\n"
+                    
+                # 情况2: 需要处理上传的文档
+                elif not has_document:
+                    # 文档内容缺失，提示用户上传文档
+                    content_message = '请先上传Word文档再进行完整文档的公文纠错。如果您只想纠正特定句子或段落，请直接输入要纠正的内容，例如"纠错：这是一段需要纠错的文字"。'
+                    yield f"data: {json.dumps({'content': content_message})}\n\n"
+                    yield "data: end\n\n"
+                    return
+                else:
+                    # 发送处理状态
+                    yield f"data: {json.dumps({'content': '正在处理文档...'})}\n\n"
+                    
+                    # 使用MCP CSC服务处理文档
+                    print("使用MCP CSC服务处理文档...")
+                    csc_result = mcp_csc(processed_doc_content)
+                    
+                    if csc_result["status"] == "success":
+                        if csc_result.get("modified", False):
+                            processed_doc = csc_result["corrected_text"]
+                            processing_message = f"已根据MCP协议完成文档纠错，共进行了以下修改：\n{csc_result.get('changes', '未提供详细修改说明')}"
+                        else:
+                            processed_doc = processed_doc_content
+                            processing_message = "已完成文档检查，" + csc_result.get("message", "未发现需要纠错的内容，已保持原文。")
+                        
+                        # 保存处理后的文档内容
+                        if last_uploaded_document:
+                            last_uploaded_document["processed_content"] = processed_doc
+                        
+                        # 发送处理结果
+                        yield f"data: {json.dumps({'content': processing_message, 'processed_document': processed_doc})}\n\n"
+                    else:
+                        # MCP服务失败，回退到LLM处理
+                        print(f"MCP服务处理失败: {csc_result.get('message', '未知错误')}，回退到LLM处理")
+                        
+                        # 使用原来的LLM处理方式
+                        system_prompt = "你是一个专业的文档处理助手。请根据用户的指令处理以下文档内容。"
+                        full_prompt = f"文档内容:\n{processed_doc_content}\n\n用户指令:\n{message}"
+                        
+                        doc_messages = [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": full_prompt}
+                        ]
+                        
+                        response = llm.invoke(doc_messages)
+                        processed_doc = response.content
+                        
+                        # 保存处理后的文档内容
+                        if last_uploaded_document:
+                            last_uploaded_document["processed_content"] = processed_doc
+                        
+                        # 发送处理结果
+                        result_message = "MCP服务暂时不可用，已使用备用方法处理您的文档。处理结果已显示在中间区域。"
+                        yield f"data: {json.dumps({'content': result_message, 'processed_document': processed_doc})}\n\n"
+            else:
+                # 普通聊天处理
+                # 添加用户新消息
+                messages.append({"role": "user", "content": message})
+                
+                # 构建系统提示
+                system_prompt = """你是小公，一个智能公文助手。
+当用户询问你的身份、名字、是谁、介绍自己等类似问题时，必须回答：
+"我是小公，您的智能公文助手！"
+
+请以自然、友好的方式回答用户的其他问题。
+记住，不要透露你是AI、大模型或DeepSeek Chat，而应始终以我是小公身份回答。"""
+                
+                # 添加系统消息到开始
+                full_messages = [{"role": "system", "content": system_prompt}] + messages
+                
+                # 调用模型
+                response = llm.invoke(full_messages)
+                assistant_response = response.content
+                
+                # 模拟流式响应，将回复分成多个部分发送
+                words = assistant_response.split()
+                chunk_size = max(1, len(words) // 10)  # 分成大约10个部分发送
+                
+                for i in range(0, len(words), chunk_size):
+                    chunk = " ".join(words[i:i+chunk_size])
+                    yield f"data: {json.dumps({'content': chunk})}\n\n"
+                    await asyncio.sleep(0.1)  # 轻微延迟模拟打字效果
+            
+            # 发送结束信号
+            yield "data: end\n\n"
+            
+        except Exception as e:
+            print(f"Stream chat error: {str(e)}")
+            yield f"data: {json.dumps({'content': f'处理请求时出错: {str(e)}'})}\n\n"
+            yield "data: end\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# 添加前端路由适配
+@app.post("/file/upload")
+async def file_upload_adapter(file: UploadFile = File(...)):
+    """适配前端/file/upload请求，存储文件并返回标准格式响应"""
+    try:
+        global last_uploaded_document, file_list
+        
+        if not file.filename.endswith(('.docx')):
+            raise HTTPException(status_code=400, detail="只支持.docx格式文件")
+        
+        # 读取文件内容到内存
+        file_content = await file.read()
+        
+        # 使用DocProcessor处理文档
+        content = DocProcessor.load_doc_stream(file_content, file.filename)
+        
+        # 生成唯一文档ID
+        document_id = str(hash(content + file.filename))
+        
+        # 重要：保存最近上传的文档（用于公文纠错）
+        # 这确保无论通过哪个接口上传，document_content都能被正确设置
+        last_uploaded_document = {
+            "document_id": document_id,
+            "content": content,
+            "original_content": content,
+            "filename": file.filename,
+            "message": "文档上传成功，请在聊天框中输入处理指令"
+        }
+        print(f"文档已上传并保存到last_uploaded_document，长度: {len(content)}")
+        
+        # 创建文件记录并添加到文件列表
+        file_item = {
+            "id": document_id,
+            "filename": file.filename,
+            "fileuuid": document_id,
+            "fileurl": "",
+            "updatetime": datetime.now().isoformat(),
+            "userid": "system"  # 可以从请求中获取，这里简化处理
+        }
+        
+        # 将文件添加到文件列表
+        if file_item not in file_list:
+            file_list.append(file_item)
+        
+        # 返回符合前端期望的响应格式
+        return {
+            "code": 200,
+            "data": file_item,
+            "msg": "文件上传成功"
+        }
+    except Exception as e:
+        print(f"文件上传处理出错: {str(e)}")
+        return {
+            "code": 500,
+            "data": None,
+            "msg": f"文件上传处理出错: {str(e)}"
+        }
+
+@app.post("/file/list")
+async def file_list_adapter(request: Request):
+    """适配前端/file/list请求，返回文件列表"""
+    try:
+        body = await request.json()
+        # 返回文件列表
+        return {
+            "code": 200,
+            "data": file_list,
+            "msg": "获取文件列表成功"
+        }
+    except Exception as e:
+        print(f"获取文件列表出错: {str(e)}")
+        return {
+            "code": 500,
+            "data": [],
+            "msg": f"获取文件列表出错: {str(e)}"
+        }
+
+@app.post("/chat/list")
+async def chat_list_adapter(request: Request):
+    """适配前端/chat/list请求"""
+    body = await request.json()
+    # 简单返回成功和空列表，可根据需要扩展
+    return {
+        "code": 200,
+        "data": [],
+        "msg": "获取聊天列表成功"
+    }
+
+@app.delete("/file/delete/{id}")
+async def file_delete_adapter(id: str):
+    """适配前端文件删除请求"""
+    # 简单返回成功，可根据需要扩展实际删除逻辑
+    return {
+        "code": 200,
+        "data": None,
+        "msg": f"文件{id}删除成功"
+    }
+
+@app.get("/file/preview")
+async def file_preview_adapter(id: str):
+    """适配前端文件预览请求"""
+    try:
+        # 从最近上传的文档内容返回
+        if not last_uploaded_document:
+            raise HTTPException(status_code=404, detail="无法预览文件，找不到内容")
+        
+        # 获取处理后的内容，如果存在的话
+        content = last_uploaded_document.get("processed_content", last_uploaded_document["content"])
+        
+        # 将文本内容转换为docx并返回
+        doc_bytes = convert_text_to_docx_bytes(content)
+        
+        return Response(
+            content=doc_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"inline; filename=preview_{last_uploaded_document['filename']}"}
+        )
+    except Exception as e:
+        print(f"预览文件出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"预览文件出错: {str(e)}")
+
+@app.get("/file/download")
+async def file_download_adapter(id: str):
+    """适配前端文件下载请求"""
+    try:
+        # 从最近上传的文档内容返回
+        if not last_uploaded_document:
+            raise HTTPException(status_code=404, detail="无法下载文件，找不到内容")
+        
+        # 获取处理后的内容，如果存在的话
+        content = last_uploaded_document.get("processed_content", last_uploaded_document["content"])
+        
+        # 生成时间戳
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        filename = last_uploaded_document["filename"]
+        filename_base = filename.rsplit(".", 1)[0]
+        download_filename = f"{filename_base}_processed_{timestamp}.docx"
+        
+        # 将文本内容转换为docx并返回
+        doc_bytes = convert_text_to_docx_bytes(content)
+        
+        return Response(
+            content=doc_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename={download_filename}"}
+        )
+    except Exception as e:
+        print(f"下载文件出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"下载文件出错: {str(e)}")
+
+@app.post("/file/modified-preview")
+async def file_modified_preview_adapter(request: Request):
+    """适配前端修改后文件预览请求"""
+    try:
+        body = await request.json()
+        file = body.get("file", {})
+        chat = body.get("chat", {})
+        
+        # 可以根据需要构建特定的预览文档
+        # 简单起见，直接返回一个示例文档
+        sample_content = "这是修改后的文档内容示例"
+        doc_bytes = DocProcessor.convert_text_to_docx_bytes(sample_content)
+        
+        return Response(
+            content=doc_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"inline; filename=modified_preview.docx"}
+        )
+    except Exception as e:
+        print(f"预览修改后文件出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"预览修改后文件出错: {str(e)}")
+
+@app.post("/file/confirm-modify")
+async def file_confirm_modify_adapter(request: Request):
+    """适配前端确认修改请求"""
+    try:
+        body = await request.json()
+        # 简单返回成功，可以扩展实际处理逻辑
+        return {
+            "code": 200,
+            "data": None,
+            "msg": "确认修改成功"
+        }
+    except Exception as e:
+        print(f"确认修改出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"确认修改出错: {str(e)}")
+
+# 将文本转换为Word文档
+def convert_text_to_docx_bytes(text_content):
+    """将文本内容转换为Word文档字节流"""
+    try:
+        from docx import Document
+        
+        # 创建新文档
+        document = Document()
+        
+        # 按段落拆分文本
+        paragraphs = text_content.split('\n')
+        
+        # 添加每个段落
+        for para_text in paragraphs:
+            if para_text.strip():  # 跳过空段落
+                document.add_paragraph(para_text)
+        
+        # 保存到内存中
+        buffer = BytesIO()
+        document.save(buffer)
+        buffer.seek(0)
+        
+        # 返回字节内容
+        return buffer.getvalue()
+    except ImportError:
+        # 如果docx库不可用，返回简单文本
+        print("python-docx库不可用，返回简单文本")
+        return text_content.encode('utf-8')
+
+# 添加到DocProcessor类
+if not hasattr(DocProcessor, 'convert_text_to_docx_bytes'):
+    DocProcessor.convert_text_to_docx_bytes = staticmethod(convert_text_to_docx_bytes)
+
+# 添加适配格式的聊天API
+@app.post("/chat/send")
+async def chat_send_adapter(request: Request):
+    """适配前端/chat/send请求，处理聊天和公文纠错"""
+    try:
+        body = await request.json()
+        message = body.get("message", "")
+        
+        # 获取聊天历史
+        chat_history = body.get("chat_history", [])
+        
+        # 从最近上传的文档获取内容
+        document_content = None
+        if last_uploaded_document:
+            document_content = last_uploaded_document["content"]
+        
+        # 进行意图分类
+        intent = IntentClassifier.classify(message)
+        print(f"Intent classified as: {intent}")
+        
+        # 获取客户端IP地址作为会话ID
+        client_ip = request.client.host
+        session_id = f"session_{client_ip}"
+        
+        # 初始化会话计数器
+        if session_id not in chat_counter:
+            chat_counter[session_id] = 0
+        
+        # 如果是聊天意图，增加计数
+        if intent == "chat":
+            chat_counter[session_id] += 1
+            print(f"Increased chat counter for {session_id} to {chat_counter[session_id]}")
+        
+        # 检查是否超过闲聊次数限制
+        if intent == "chat" and chat_counter[session_id] > 3:
+            # 重置意图为强制文档处理
+            intent = "forced_correction"
+            # 添加系统消息，引导用户回到公文纠错
+            guidance_message = "您已经闲聊超过3次，请回到公文纠错相关任务。您可以尝试输入「纠错」、「润色」等指令来处理您的文档。"
+            
+            # 向聊天历史添加助手回复
+            chat_history.append({"role": "assistant", "content": guidance_message})
+            
+            return {
+                "code": 200,
+                "data": {
+                    "response": guidance_message,
+                    "chat_history": chat_history,
+                    "processed_document": None
+                },
+                "msg": "聊天处理成功"
+            }
+        
+        # 根据意图处理请求
+        if intent in ["correction", "writing", "recorrection", "forced_correction"]:
+            # 检查是否有文档内容
+            if not document_content:
+                # 文档内容缺失，提示用户上传文档
+                no_doc_message = "请先上传Word文档再进行公文纠错。您可以点击左侧面板的「上传文档」按钮上传文件。"
+                
+                # 向聊天历史添加用户消息和助手回复
+                chat_history.append({"role": "user", "content": message})
+                chat_history.append({"role": "assistant", "content": no_doc_message})
+                
+                return {
+                    "code": 200,
+                    "data": {
+                        "response": no_doc_message,
+                        "chat_history": chat_history,
+                        "processed_document": None
+                    },
+                    "msg": "聊天处理成功"
+                }
+            
+            # 使用MCP CSC服务处理文档
+            print("使用MCP CSC服务处理文档...")
+            csc_result = mcp_csc(document_content)
+            
+            if csc_result["status"] == "success":
+                if csc_result.get("modified", False):
+                    processed_document = csc_result["corrected_text"]
+                    processing_message = f"已完成文档纠错，共进行了以下修改：\n{csc_result.get('changes', '未提供详细修改说明')}"
+                else:
+                    processed_document = document_content
+                    processing_message = "已完成文档检查，" + csc_result.get("message", "未发现需要纠错的内容，已保持原文。")
+                
+                # 保存处理后的文档内容
+                if last_uploaded_document:
+                    last_uploaded_document["processed_content"] = processed_document
+                
+                # 向聊天历史添加用户消息和助手回复
+                chat_history.append({"role": "user", "content": message})
+                chat_history.append({"role": "assistant", "content": processing_message})
+                
+                return {
+                    "code": 200,
+                    "data": {
+                        "response": processing_message,
+                        "chat_history": chat_history,
+                        "processed_document": processed_document
+                    },
+                    "msg": "公文纠错处理成功"
+                }
+            else:
+                # MCP服务失败，回退到LLM处理
+                print(f"MCP服务处理失败: {csc_result.get('message', '未知错误')}，回退到LLM处理")
+                
+                # 使用原来的LLM处理方式
+                system_prompt = "你是一个专业的文档处理助手。请根据用户的指令处理以下文档内容。"
+                full_prompt = f"文档内容:\n{document_content}\n\n用户指令:\n{message}"
+                
+                doc_messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": full_prompt}
+                ]
+                
+                response = llm.invoke(doc_messages)
+                processed_document = response.content
+                
+                # 保存处理后的文档内容
+                if last_uploaded_document:
+                    last_uploaded_document["processed_content"] = processed_document
+                
+                # 向聊天历史添加用户消息和助手回复
+                chat_history.append({"role": "user", "content": message})
+                fallback_message = "MCP服务暂时不可用，已使用备用方法处理您的文档。处理结果已显示在中间区域。"
+                chat_history.append({"role": "assistant", "content": fallback_message})
+                
+                return {
+                    "code": 200,
+                    "data": {
+                        "response": fallback_message,
+                        "chat_history": chat_history,
+                        "processed_document": processed_document
+                    },
+                    "msg": "公文纠错处理成功"
+                }
+        else:
+            # 普通聊天处理
+            # 构建系统提示
+            system_prompt = """你是小公，一个智能公文助手。
+当用户询问你的身份、名字、是谁、介绍自己等类似问题时，必须回答：
+"我是小公，您的智能公文助手！"
+
+请以自然、友好的方式回答用户的其他问题。
+记住，不要透露你是AI、大模型或DeepSeek Chat，而应始终以我是小公身份回答。"""
+            
+            # 添加系统消息到开始
+            full_messages = [{"role": "system", "content": system_prompt}]
+            
+            # 添加历史消息和当前用户消息
+            for msg in chat_history:
+                if msg["role"] in ["user", "assistant"]:
+                    full_messages.append(msg)
+            full_messages.append({"role": "user", "content": message})
+            
+            # 调用模型生成回复
+            try:
+                # 调用模型生成回复
+                model_response = llm.invoke(full_messages)
+                assistant_message = model_response.content
+                
+                # 添加助手回复到历史
+                chat_history.append({"role": "user", "content": message})
+                chat_history.append({"role": "assistant", "content": assistant_message})
+                
+                return {
+                    "code": 200,
+                    "data": {
+                        "response": assistant_message,
+                        "chat_history": chat_history,
+                        "processed_document": None
+                    },
+                    "msg": "聊天处理成功"
+                }
+            except Exception as e:
+                print(f"模型调用出错: {str(e)}")
+                error_message = "处理您的请求时出错，请稍后再试。"
+                chat_history.append({"role": "user", "content": message})
+                chat_history.append({"role": "assistant", "content": error_message})
+                
+                return {
+                    "code": 200,
+                    "data": {
+                        "response": error_message,
+                        "chat_history": chat_history,
+                        "processed_document": None
+                    },
+                    "msg": "聊天处理失败"
+                }
+    
+    except Exception as e:
+        print(f"处理聊天请求出错: {str(e)}")
+        return {
+            "code": 500,
+            "data": None,
+            "msg": f"处理聊天请求出错: {str(e)}"
+        }
+
+# 添加MCP服务接口
+@app.get("/api/mcp/info")
+async def mcp_info():
+    """返回MCP服务信息"""
+    try:
+        # 读取配置文件
+        config_path = Path(__file__).parent / "mcp_config.json"
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+            
+        return {
+            "status": "success",
+            "service_name": config["service"]["name"],
+            "version": config["service"]["version"],
+            "description": config["service"]["description"],
+            "tools": [
+                {"name": tool["name"], "description": tool["description"]}
+                for tool in config["tools"]
+            ]
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/mcp/correction")
+async def mcp_correction(request: Request):
+    """MCP公文纠错接口"""
+    try:
+        body = await request.json()
+        text = body.get("text")
+        
+        if not text:
+            return {"status": "error", "message": "Text is required"}
+            
+        # 调用MCP公文纠错函数
+        result = mcp_csc(text)
+        
+        if result["status"] == "success":
+            if result.get("modified", False):
+                return {
+                    "status": "success", 
+                    "corrected": result["corrected_text"],
+                    "changes": result.get("changes", "")
+                }
+            else:
+                return {
+                    "status": "success", 
+                    "corrected": text,
+                    "message": result.get("message", "No corrections needed")
+                }
+        else:
+            return {"status": "error", "message": result.get("message", "Correction failed")}
+            
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/mcp/invoke")
+async def mcp_invoke_tool(request: Request):
+    """通用MCP工具调用接口"""
+    try:
+        from my_agent.agent_tools import call_mcp_service
+        
+        body = await request.json()
+        tool = body.get("tool")
+        params = body.get("params", {})
+        
+        if not tool:
+            return {"status": "error", "message": "Tool name is required"}
+            
+        # 调用MCP服务
+        result = call_mcp_service(tool, params)
+        
+        return result
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api.main:app", host="0.0.0.0", port=8003, reload=True) 
