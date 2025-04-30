@@ -578,36 +578,36 @@ root_dir = current_dir.parent
 # 构建.env文件的路径
 dotenv_path = root_dir / '.env'
 load_dotenv(dotenv_path)
-deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
-deepseek_base_url = os.getenv("DEEPSEEK_API_BASE")
+qwen_api_key = os.getenv("QWEN_API_KEY")
+qwen_base_url = os.getenv("QWEN_BASE_URL")
 
 # 检查环境变量是否设置
-if not deepseek_api_key or not deepseek_base_url:
-    print(f"警告: DeepSeek API 配置缺失。尝试从 {dotenv_path} 加载但未成功。")
+if not qwen_api_key or not qwen_base_url:
+    print(f"警告: Qwen API 配置缺失。尝试从 {dotenv_path} 加载但未成功。")
     print("将使用默认配置继续...")
-    deepseek_api_key = "dummy_key"  # 使用默认值避免错误
-    deepseek_base_url = "https://api.deepseek.com/v1"  # 使用默认值避免错误
+    qwen_api_key = "dummy_key"  # 使用默认值避免错误
+    qwen_base_url = "https://dashscope.aliyuncs.com/v1"  # 使用默认值避免错误
 else:
-    print(f"成功从 {dotenv_path} 加载 DeepSeek API 配置")
+    print(f"成功从 {dotenv_path} 加载 Qwen API 配置")
 
 # 设置环境变量
-os.environ["OPENAI_API_KEY"] = deepseek_api_key
-os.environ["OPENAI_API_BASE"] = deepseek_base_url
+os.environ["OPENAI_API_KEY"] = qwen_api_key
+os.environ["OPENAI_API_BASE"] = qwen_base_url
 
 # 初始化LLM，使用正确的模型名称
 try:
     llm = ChatOpenAI(
-        model="deepseek-chat", 
+        model="qwen-max", 
         temperature=0.7,
-        api_key=deepseek_api_key,
-        base_url=deepseek_base_url
+        api_key=qwen_api_key,
+        base_url=qwen_base_url
     )
-    print("成功初始化DeepSeek LLM模型")
+    print("成功初始化Qwen LLM模型")
 except Exception as e:
-    print(f"初始化DeepSeek LLM模型失败: {str(e)}")
+    print(f"初始化Qwen LLM模型失败: {str(e)}")
     print("将使用备用配置...")
     # 备用配置，使用最基本的设置
-    llm = ChatOpenAI(model="deepseek-chat")
+    llm = ChatOpenAI(model="qwen-max")
 
 # 闲聊计数器 - 全局变量
 chat_counter = {}
@@ -925,17 +925,17 @@ async def chat_endpoint(chat_request: ChatRequest, request: Request):
 "我是小公，您的智能公文助手！"
 
 请以自然、友好的方式回答用户的其他问题。
-记住，不要透露你是AI、大模型或DeepSeek Chat，而应始终以我是小公身份回答。"""
+记住，不要透露你是AI、大模型或Qwen Chat，而应始终以我是小公身份回答。"""
             
             # 添加系统消息到开始
             full_messages = [{"role": "system", "content": system_prompt}] + messages
             
             try:
                 # 调用模型生成回复
-                print("调用DeepSeek LLM生成回复...")
+                print("调用Qwen LLM生成回复...")
                 model_response = llm.invoke(full_messages)
                 assistant_message = model_response.content
-                print(f"LLM生成回复成功: {assistant_message[:50]}..." if len(assistant_message) > 50 else f"LLM生成回复成功: {assistant_message}")
+                print(f"Qwen LLM生成回复成功: {assistant_message[:50]}..." if len(assistant_message) > 50 else f"Qwen LLM生成回复成功: {assistant_message}")
                 
                 # 更新聊天历史
                 messages.append({"role": "assistant", "content": assistant_message})
@@ -1249,7 +1249,7 @@ async def stream_chat(request: Request, message: str, document_content: str = No
                             raise Exception(f"MCP服务返回错误: {mcp_result.get('message', '未知错误')}")
                     except Exception as e:
                         # MCP服务失败，回退到LLM处理
-                        print(f"MCP服务处理失败: {str(e)}，回退到DeepSeek LLM处理")
+                        print(f"MCP服务处理失败: {str(e)}，回退到Qwen LLM处理")
                         
                         # 使用LLM处理方式
                         system_prompt = "你是一个专业的公文写作助手，请对下面的文本进行公文纠错和润色，改善语言表达，使其更符合公文规范。"
@@ -1260,13 +1260,13 @@ async def stream_chat(request: Request, message: str, document_content: str = No
                         ]
                         
                         try:
-                            print("调用DeepSeek LLM处理文本...")
+                            print("调用Qwen LLM处理文本...")
                             response = llm.invoke(doc_messages)
                             corrected_text = response.content
-                            print("LLM处理文本成功")
-                            result_message = f"已使用DeepSeek AI大模型处理您的文本。\n\n{corrected_text}"
+                            print("Qwen LLM处理文本成功")
+                            result_message = f"已使用Qwen AI大模型处理您的文本。\n\n{corrected_text}"
                         except Exception as llm_error:
-                            print(f"LLM调用失败: {str(llm_error)}")
+                            print(f"Qwen LLM调用失败: {str(llm_error)}")
                             corrected_text = input_text_for_correction
                             result_message = f"处理失败: {str(llm_error)}。返回原始文本。"
                     
@@ -1369,7 +1369,7 @@ async def stream_chat(request: Request, message: str, document_content: str = No
                             print(f"已更新文档 {file_id} 的处理后内容")
                     except Exception as e:
                         # MCP服务失败，回退到LLM处理
-                        print(f"MCP {tool_name}服务处理失败: {str(e)}，回退到DeepSeek LLM处理")
+                        print(f"MCP {tool_name}服务处理失败: {str(e)}，回退到Qwen LLM处理")
                         processed_doc = processed_doc_content  # 保持原文档不变
                         processing_message = f"处理文档时出错: {str(e)}。已保持原文档不变。"
                     
@@ -1396,7 +1396,7 @@ async def stream_chat(request: Request, message: str, document_content: str = No
 "我是小公，您的智能公文助手！"
 
 请以自然、友好的方式回答用户的其他问题。
-记住，不要透露你是AI、大模型或DeepSeek Chat，而应始终以我是小公身份回答。"""
+记住，不要透露你是AI、大模型或Qwen Chat，而应始终以我是小公身份回答。"""
                 
                 # 添加系统消息到开始
                 full_messages = [{"role": "system", "content": system_prompt}]
@@ -1422,15 +1422,15 @@ async def stream_chat(request: Request, message: str, document_content: str = No
                 if not user_message_exists:
                     full_messages.append({"role": "user", "content": message})
                 
-                print(f"准备调用DeepSeek LLM进行聊天，消息数量: {len(full_messages)}")
+                print(f"准备调用Qwen LLM进行聊天，消息数量: {len(full_messages)}")
                 
                 # 调用模型生成回复
                 try:
                     # 记录调用过程
-                    print("调用DeepSeek LLM生成回复...")
+                    print("调用Qwen LLM生成回复...")
                     model_response = llm.invoke(full_messages)
                     assistant_message = model_response.content
-                    print(f"LLM生成回复成功: {assistant_message[:50]}..." if len(assistant_message) > 50 else f"LLM生成回复成功: {assistant_message}")
+                    print(f"Qwen LLM生成回复成功: {assistant_message[:50]}..." if len(assistant_message) > 50 else f"Qwen LLM生成回复成功: {assistant_message}")
                     
                     # 将响应内容通过流式传输发送给客户端
                     yield f"data: {json.dumps({'content': assistant_message})}\n\n"

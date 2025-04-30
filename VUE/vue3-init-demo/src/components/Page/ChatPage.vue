@@ -9,10 +9,27 @@
         <h2>{{ currentChat?.title || '新对话' }}</h2>
       </div>
       <div class="header-right">
-        <a-button type="primary" @click="createNewChat" :loading="isCreatingNewChat">新对话</a-button>
+        <a-button 
+          type="primary" 
+          @click="createNewChat" 
+          :loading="isCreatingNewChat"
+          :disabled="isProcessing"
+          :title="isProcessing ? '文档处理中，请等待处理完成后再创建新对话' : ''"
+        >新对话</a-button>
         <div v-if="showDownloadButton" class="action-buttons">
-          <a-button type="primary" @click="downloadDocument" :loading="isDownloading">下载文档</a-button>
-          <a-button v-if="fileStore.processedContent" @click="previewDocument">预览文档</a-button>
+          <a-button 
+            type="primary" 
+            @click="downloadDocument" 
+            :loading="isDownloading"
+            :disabled="isProcessing"
+            :title="isProcessing ? '文档处理中，请等待处理完成后再下载文档' : ''"
+          >下载文档</a-button>
+          <a-button 
+            v-if="fileStore.processedContent" 
+            @click="previewDocument"
+            :disabled="isProcessing"
+            :title="isProcessing ? '文档处理中，请等待处理完成后再预览文档' : ''"
+          >预览文档</a-button>
         </div>
       </div>
     </div>
@@ -42,7 +59,8 @@
   </div>
 </template>
 <script setup lang="ts">
-import { ref, watch, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, watch, computed, nextTick, onMounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import { message, Button as AButton, Tag as ATag, Modal as AModal, Alert as AAlert } from 'ant-design-vue'
 import { useChatStore } from '@/stores/chat'
 import { useAuthStore } from '@/stores/auth'
@@ -53,7 +71,7 @@ import type { Message } from '@/types/ChatType'
 // @ts-ignore - Ignore missing type declaration for openRouter
 import openRouterService from '@/api/openRouter'
 // 引入weChatbot服务
-import { sendChatRequest, downloadProcessedDocument, healthCheck } from '@/services/weChatbotService'
+import { sendChatRequest, downloadProcessedDocument } from '@/services/weChatbotService'
 // 引入markdown解析
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -71,48 +89,21 @@ const chatStore = useChatStore()
 const fileStore = useFileStore()
 const currentChat = computed(() => chatStore.currentChat)
 const currentChatId = computed(() => currentChat.value.id)
-const showDownloadButton = computed(() => fileStore.hasModifiedDoc && currentChatId.value)
+// 添加日志，确保下载按钮条件能正确显示
+const showDownloadButton = computed(() => {
+  const result = fileStore.hasModifiedDoc && currentChatId.value;
+  console.log(`showDownloadButton 计算: hasModifiedDoc=${fileStore.hasModifiedDoc}, currentChatId=${currentChatId.value}, result=${result}`);
+  return result;
+})
+const { isProcessing } = storeToRefs(fileStore)
 
 // 加载状态
 const isCreatingNewChat = ref(false)
 const isDownloading = ref(false)
 const isMessageSending = ref(false)
-const connectionStatus = ref('checking') // 'checking', 'connected', 'error'
-const connectionStatusMessage = computed(() => {
-  switch(connectionStatus.value) {
-    case 'checking': return '正在检查后端连接...';
-    case 'connected': return '已连接到后端服务';
-    case 'error': return '无法连接到后端服务，某些功能可能不可用';
-    default: return '';
-  }
-})
 
 // 添加key值用于强制刷新Chat组件
 const chatUpdateKey = ref(0)
-
-// 检查后端连接状态
-const checkBackendConnection = async () => {
-  // 直接将状态设为已连接，不再执行实际检查
-  connectionStatus.value = 'connected';
-  return true;
-  
-  // 以下代码已禁用
-  /*
-  try {
-    connectionStatus.value = 'checking';
-    const isHealthy = await healthCheck();
-    connectionStatus.value = isHealthy ? 'connected' : 'error';
-    
-    if (!isHealthy) {
-      message.warning('无法连接到后端服务，某些功能可能无法正常工作');
-    }
-  } catch (error) {
-    connectionStatus.value = 'error';
-    console.error('检查后端连接失败:', error);
-    message.error('无法连接到后端服务');
-  }
-  */
-};
 
 // --------------------------------------------
 const authStore = useAuthStore()
@@ -153,6 +144,16 @@ const initializeChat = () => {
 
 // 创建新对话 - 简化版本
 const createNewChat = async () => {
+  // 如果文档正在处理中，不允许创建新对话
+  if (isProcessing.value) {
+    message.warning('文档处理中，请等待处理完成后再创建新对话')
+    return
+  }
+  
+  // 保存当前文档处理状态
+  const hadModifiedDoc = fileStore.hasModifiedDoc;
+  const processedContent = fileStore.processedContent;
+  
   try {
     isCreatingNewChat.value = true
     
@@ -162,7 +163,23 @@ const createNewChat = async () => {
     // 重置消息列表
     initializeChat()
     
+    // 恢复文档处理状态（如果之前有的话）
+    if (hadModifiedDoc) {
+      console.log('恢复文档处理状态，确保下载按钮可见');
+      fileStore.updateProcessedContent(processedContent);
+      fileStore.setHasModifiedDoc(true);
+    }
+    
     message.success('新对话已创建')
+    
+    // 立即保存初始系统消息到store
+    if (currentChatId.value) {
+      console.log('保存初始化消息到新聊天, ID:', currentChatId.value);
+      chatStore.updateCurrentChat({
+        ...currentChat.value,
+        messages: chats.value
+      })
+    }
   } catch (error) {
     console.error('创建新对话失败:', error)
     message.error('创建新对话失败')
@@ -173,6 +190,12 @@ const createNewChat = async () => {
 
 // 下载文档功能
 const downloadDocument = async () => {
+  // 如果文档正在处理中，不允许下载
+  if (isProcessing.value) {
+    message.warning('文档处理中，请等待处理完成后再下载文档')
+    return
+  }
+  
   if (!currentChatId.value || !fileStore.hasModifiedDoc) {
     message.warning('没有可下载的文档')
     return
@@ -206,6 +229,12 @@ const downloadDocument = async () => {
 
 // 预览文档
 const previewDocument = () => {
+  // 如果文档正在处理中，不允许预览
+  if (isProcessing.value) {
+    message.warning('文档处理中，请等待处理完成后再预览文档')
+    return
+  }
+  
   if (!fileStore.processedContent) {
     message.warning('没有可预览的文档内容')
     return
@@ -220,16 +249,25 @@ const sendMessage = async (msg: string) => {
     message.warning('请输入消息内容')
     return
   }
-  
+
   try {
     isMessageSending.value = true
     console.log('开始处理用户消息:', msg.substring(0, 20) + (msg.length > 20 ? '...' : ''))
+    
+    // 检查是否包含文档处理关键词
+    const isDocProcessingCommand = /纠错|润色|总结|优化|分析/.test(msg)
+    
+    // 如果是文档处理指令，设置处理状态为true
+    if (isDocProcessingCommand && fileStore.currentFile.id) {
+      fileStore.setProcessingStatus(true)
+      console.log('检测到文档处理指令，设置处理状态为true')
+    }
     
     // 如果没有当前聊天，创建一个新的
     if (!currentChatId.value) {
       await createNewChat()
     }
-    
+
     // 添加用户消息
     const userMessage: Message = {
       role: 'user',
@@ -249,10 +287,10 @@ const sendMessage = async (msg: string) => {
       status: 'loading'
     }
     chats.value.push(assistantMessage)
-    
+
     // 强制更新Chat组件
     forceUpdateChat()
-    
+
     // 滚动到底部
     scrollToBottom()
     
@@ -271,6 +309,15 @@ const sendMessage = async (msg: string) => {
         nextTick(() => {
           scrollToBottom()
         })
+        
+        // 保存当前聊天到store，确保聊天ID不丢失
+        if (currentChatId.value) {
+          console.log('更新当前聊天，保存消息记录, ID:', currentChatId.value);
+          chatStore.updateCurrentChat({
+            ...currentChat.value,
+            messages: chats.value
+          })
+        }
       },
       // 完成回调
       () => {
@@ -282,6 +329,25 @@ const sendMessage = async (msg: string) => {
         nextTick(() => {
           scrollToBottom()
         })
+        
+        // 保存聊天记录和ID
+        if (currentChatId.value) {
+          console.log('聊天请求完成，保存最终消息记录, ID:', currentChatId.value);
+          chatStore.updateCurrentChat({
+            ...currentChat.value,
+            messages: chats.value
+          })
+        }
+        
+        // 如果是文档处理指令，在完成后设置处理状态为false
+        if (isDocProcessingCommand && fileStore.currentFile.id) {
+          // 延迟一点设置处理完成状态，保证文档完全处理完毕
+          setTimeout(() => {
+            fileStore.setProcessingStatus(false)
+            console.log('文档处理完成，设置处理状态为false，检查下载按钮状态：', 
+              `hasModifiedDoc=${fileStore.hasModifiedDoc}, currentChatId=${currentChatId.value}`);
+          }, 1000)
+        }
       },
       // 错误回调
       (error) => {
@@ -291,8 +357,15 @@ const sendMessage = async (msg: string) => {
           assistantMessage.content = '请求超时，请重试。'
         } else if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
           assistantMessage.content = '网络连接异常，请检查后端服务是否正常运行。'
+        } else if (error.response) {
+          // 服务器响应错误
+          assistantMessage.content = `服务器错误(${error.response.status}): ${error.response.statusText || '请检查服务器日志'}`
+        } else if (error.request) {
+          // 请求已发送但未收到响应
+          assistantMessage.content = '后端服务未响应，请检查后端服务是否正常运行。'
         } else {
-          assistantMessage.content = '发送消息时出错，请重试。'
+          // 其他错误情况
+          assistantMessage.content = '发送消息时出错，请重试: ' + (error.message || '未知错误')
         }
         assistantMessage.status = 'error'
         // 确保响应式更新
@@ -302,6 +375,12 @@ const sendMessage = async (msg: string) => {
         nextTick(() => {
           scrollToBottom()
         })
+        
+        // 如果发生错误，也要重置处理状态
+        if (isDocProcessingCommand && fileStore.currentFile.id) {
+          fileStore.setProcessingStatus(false)
+          console.log('文档处理出错，重置处理状态为false')
+        }
       }
     )
     
@@ -310,56 +389,60 @@ const sendMessage = async (msg: string) => {
     
     // 简单更新当前聊天，不发送到后端
     if (currentChatId.value) {
+      console.log('最终保存聊天记录, ID:', currentChatId.value);
       chatStore.updateCurrentChat({
+        ...currentChat.value,
         messages: chats.value
       })
+    } else if (chatStore.chatListData.length > 0) {
+      // 如果没有当前聊天ID但有历史聊天，尝试恢复
+      const lastChat = chatStore.chatListData[0];
+      console.log('尝试恢复最近的聊天作为当前聊天:', lastChat.id);
+      chatStore.setCurrentChat(lastChat);
+      
+      // 保存消息到这个聊天
+      chatStore.updateCurrentChat({
+        ...lastChat,
+        messages: chats.value
+      });
     }
   } catch (error) {
     console.error('发送消息错误:', error)
     message.error('发送消息失败，请重试')
+    
+    // 确保任何错误情况下都重置处理状态
+    fileStore.setProcessingStatus(false)
   } finally {
     isMessageSending.value = false
   }
 }
 
-// 滚动到底部的函数
-const scrollToBottom = () => {
-  nextTick(() => {
-    try {
-      // 1. 尝试使用 semi-chat 类名查找
-      const chatElement = document.querySelector('.semi-chat')
-      if (chatElement) {
-        chatElement.scrollTop = chatElement.scrollHeight
-      }
-
-      // 2. 尝试使用组件的内置方法
-      if (chatRef.value && typeof chatRef.value.scrollToBottom === 'function') {
-        chatRef.value.scrollToBottom(true)
-      }
-
-      // 3. 尝试查找消息容器的其他可能类名
-      const messageContainer = document.querySelector('.semi-chat-messages')
-      if (messageContainer) {
-        messageContainer.scrollTop = messageContainer.scrollHeight
-      }
-    } catch (error) {
-      console.error('滚动到底部失败:', error)
-    }
-  })
-}
-
-// 组件挂载时初始化和检查后端连接
+// 组件挂载时初始化
 onMounted(() => {
-  initializeChat()
-  checkBackendConnection()
+  // 只在没有当前聊天记录时初始化
+  if (!currentChat.value || !currentChat.value.id || !currentChat.value.messages || currentChat.value.messages.length === 0) {
+    console.log('没有现有聊天记录，初始化新对话');
+    
+    // 创建系统初始消息
+    initializeChat();
+    
+    // 如果已经有聊天ID，保存初始化消息
+    if (currentChatId.value) {
+      console.log('组件挂载时保存初始消息, ID:', currentChatId.value);
+      chatStore.updateCurrentChat({
+        ...currentChat.value,
+        messages: chats.value
+      });
+    }
+  } else {
+    console.log('恢复现有聊天记录, ID:', currentChat.value.id);
+    // 恢复现有聊天记录
+    chats.value = currentChat.value.messages || [];
+  }
   
-  // 设置定期检查后端连接的计时器
-  const connectionCheckInterval = setInterval(checkBackendConnection, 60000) // 每分钟检查一次
-  
-  // 组件卸载时清除计时器
-  onUnmounted(() => {
-    clearInterval(connectionCheckInterval)
-  })
+  // 检查文档处理状态，确保下载按钮正确显示
+  console.log('组件挂载时检查处理状态：', 
+    `hasModifiedDoc=${fileStore.hasModifiedDoc}, currentChatId=${currentChatId.value}`);
 })
 
 // --------------------------------------------
@@ -370,6 +453,53 @@ const currentFileId = computed(() => fileStore.currentFile?.id || '')
 const forceUpdateChat = () => {
   chatUpdateKey.value += 1
 }
+
+// 滚动到底部
+const scrollToBottom = () => {
+  if (chatRef.value) {
+    nextTick(() => {
+      try {
+        // @ts-ignore - Ignore missing type declaration for this method
+        if (chatRef.value && typeof chatRef.value.scrollToBottom === 'function') {
+          chatRef.value.scrollToBottom()
+        }
+      } catch (error) {
+        console.warn('滚动到底部失败:', error)
+      }
+    })
+  }
+}
+
+// 监听currentChat变化，当切换对话时自动更新聊天记录
+watch(
+  () => currentChat.value,
+  (newChat) => {
+    if (newChat && newChat.id && newChat.messages && newChat.messages.length > 0) {
+      console.log('检测到聊天记录变化，ID:', newChat.id, '消息数量:', newChat.messages.length)
+      chats.value = newChat.messages
+      forceUpdateChat()
+      nextTick(() => {
+        scrollToBottom()
+      })
+    }
+  },
+  { deep: true }
+)
+
+// 监听hasModifiedDoc状态变化，确保下载按钮正确显示
+watch(
+  () => fileStore.hasModifiedDoc,
+  (newVal) => {
+    console.log(`hasModifiedDoc 变化为 ${newVal}，当前 currentChatId=${currentChatId.value}`);
+    // 如果文档已处理但当前没有聊天ID，尝试恢复
+    if (newVal && !currentChatId.value && chatStore.chatListData.length > 0) {
+      // 尝试设置最近的聊天为当前聊天
+      const lastChat = chatStore.chatListData[0];
+      console.log('尝试恢复聊天ID，使用最近的聊天:', lastChat.id);
+      chatStore.setCurrentChat(lastChat);
+    }
+  }
+)
 </script>
 <style lang="less" scoped>
 .chat-container {

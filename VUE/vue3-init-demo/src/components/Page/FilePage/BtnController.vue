@@ -8,17 +8,23 @@
       :max-count="1"
       accept=".doc,.docx"
       class="btn-css"
+      :disabled="isProcessing"
     >
-      <a-button class="btn-css-upload" :icon="h(CloudUploadOutlined)" :loading="loadingUpload"
-        >上传新文件</a-button
-      >
+      <a-button 
+        class="btn-css-upload" 
+        :icon="h(CloudUploadOutlined)" 
+        :loading="loadingUpload"
+        :disabled="isProcessing"
+        :title="isProcessing ? '文档处理中，请等待处理完成后再上传文件' : ''"
+      >上传新文件</a-button>
     </a-upload>
     <a-button
       class="btn-css btn-css-modify"
       :icon="h(CheckCircleOutlined)"
       @click="onConfirmModify"
       :loading="loadingModify"
-      :disabled="disableModify"
+      :disabled="disableModify || isProcessing"
+      :title="isProcessing ? '文档处理中，请等待处理完成后再进行操作' : ''"
       >确认修改</a-button
     >
     <a-button
@@ -26,7 +32,8 @@
       :icon="h(RedoOutlined)"
       @click="onReset"
       :loading="loadingReset"
-      :disabled="disableReset"
+      :disabled="disableReset || isProcessing"
+      :title="isProcessing ? '文档处理中，请等待处理完成后再进行操作' : ''"
       >重置</a-button
     >
     <a-button
@@ -34,7 +41,8 @@
       :icon="h(DownloadOutlined)"
       @click="onDownload"
       :loading="loadingDownload"
-      :disabled="disableDownload"
+      :disabled="disableDownload || isProcessing"
+      :title="isProcessing ? '文档处理中，请等待处理完成后再进行操作' : ''"
       >下载</a-button
     >
   </div>
@@ -74,9 +82,15 @@ const authStore = useAuthStore()
 const fileStore = useFileStore()
 const currentFileId = computed(() => fileStore.currentFile.id)
 // ----------------------------------------------
-const { loadingUpload, uploadFileList } = storeToRefs(fileStore)
+const { loadingUpload, uploadFileList, isProcessing } = storeToRefs(fileStore)
 // 自定义上传
 const customUpload: UploadProps['beforeUpload'] = async (file, _fileList) => {
+  // 如果文件正在处理中，不允许上传
+  if (isProcessing.value) {
+    message.warning('文档处理中，请等待处理完成后再上传文件');
+    return false;
+  }
+  
   const isWord =
     file.type === 'application/msword' ||
     file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||

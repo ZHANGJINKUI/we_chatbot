@@ -15,6 +15,22 @@ axiosInstance.interceptors.response.use(
   response => response,
   error => {
     console.error('API请求错误:', error.message);
+    // 增强错误对象，添加更详细的信息
+    if (error.response) {
+      // 服务器返回了错误响应
+      error.apiErrorType = 'server';
+      error.statusCode = error.response.status;
+      error.statusText = error.response.statusText;
+      console.error(`服务器错误: ${error.statusCode} ${error.statusText}`);
+    } else if (error.request) {
+      // 请求已发送但未收到响应
+      error.apiErrorType = 'timeout';
+      console.error('请求超时或后端服务未响应');
+    } else {
+      // 设置请求时发生错误
+      error.apiErrorType = 'network';
+      console.error('网络或其他错误:', error.message);
+    }
     return Promise.reject(error);
   }
 );
@@ -85,7 +101,7 @@ export const sendChatRequest = async (
 ) => {
   // 定义可能需要清理的资源
   let timeoutId: number | null = null;
-  let controller: AbortController | null = null;
+  let controller: AbortController | null = new AbortController();
 
   try {
     // 检查消息是否与文档处理相关
@@ -100,7 +116,13 @@ export const sendChatRequest = async (
     // 构建请求参数
     const params = new URLSearchParams();
     params.append('message', message);
-    params.append('chat_history', JSON.stringify(chatHistory.map(msg => ({
+
+    // 限制历史消息数量，只取最近的10条消息，避免请求头过大
+    const limitedChatHistory = chatHistory.length > 10
+      ? chatHistory.slice(chatHistory.length - 10)
+      : chatHistory;
+
+    params.append('chat_history', JSON.stringify(limitedChatHistory.map(msg => ({
       role: msg.role,
       content: msg.content
     }))));
@@ -114,85 +136,142 @@ export const sendChatRequest = async (
     // 构建请求URL
     const requestUrl = `/api/stream-chat?${params.toString()}`;
 
-    // 使用axios进行请求而非fetch API以避免流式处理问题
+    // 设置超时
+    const timeout = isDocRequest ? 60000 : 30000;
+    timeoutId = window.setTimeout(() => {
+      if (controller) {
+        controller.abort();
+        controller = null;
+      }
+    }, timeout);
+
+    // 详细日志记录请求信息
+    console.log("==========================================");
+    console.log("开始发送流式请求，请求信息：");
+    console.log("URL:", requestUrl);
+    console.log("用户消息:", message.substring(0, 50) + (message.length > 50 ? '...' : ''));
+    console.log("历史消息数量:", chatHistory.length, "实际发送:", limitedChatHistory.length);
+    console.log("意图:", messageIntent);
+    console.log("是否包含文档:", isDocRequest && hasUploadedDoc);
+    console.log("==========================================");
+
+    // 使用fetch API处理流式响应
     console.log("开始发送请求到: ", requestUrl);
-    const response = await axios.get(requestUrl, {
-      responseType: 'text',
-      headers: { 'Accept': 'text/event-stream' },
-      timeout: isDocRequest ? 60000 : 30000
+    const response = await fetch(requestUrl, {
+      method: 'GET',
+      headers: {
+        'Accept': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      },
+      signal: controller.signal
     });
 
-    console.log("收到响应:", response.status);
+    console.log("收到响应:", response.status, response.statusText);
 
-    if (response.status !== 200) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+    // 输出响应头信息以便调试
+    console.log("响应头信息:");
+    response.headers.forEach((value, key) => {
+      console.log(`${key}: ${value}`);
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}, statusText: ${response.statusText}`);
     }
 
-    const text = response.data || '';
-    const messages = text.split('\n\n');
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
 
     // 收集到的完整内容
     let fullContent = '';
     let hasProcessedDocument = false;
 
-    // 处理每个消息块
-    for (const msg of messages) {
-      if (!msg || !msg.trim()) continue;
+    // 创建一个reader读取流式数据
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
 
-      if (msg.startsWith('data: ')) {
-        const data = msg.substring(6).trim();
+    console.log("开始读取流式响应...");
 
-        if (data === 'end') break;
+    // 读取数据
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        console.log("流式响应读取完成");
+        break;
+      }
 
-        try {
-          const parsedData = JSON.parse(data);
+      // 解码二进制数据为文本
+      const text = decoder.decode(value, { stream: true });
+      console.log("收到数据块，长度:", text.length, "字节");
 
-          // 更新内容
-          if (parsedData && parsedData.content) {
-            fullContent = parsedData.content;
-            onContent(fullContent);
+      const messages = text.split('\n\n');
+      console.log("解析得到消息块数量:", messages.length);
+
+      // 处理每个消息块
+      for (const msg of messages) {
+        if (!msg || !msg.trim()) continue;
+
+        if (msg.startsWith('data: ')) {
+          const data = msg.substring(6).trim();
+
+          if (data === 'end') {
+            console.log("收到结束标记");
+            break;
           }
 
-          // 处理文档内容
-          if (parsedData && parsedData.processed_document) {
-            hasProcessedDocument = true;
+          try {
+            const parsedData = JSON.parse(data);
+            console.log("成功解析JSON数据");
 
-            if (fileStore.currentFile && fileStore.currentFile.id) {
-              fileStore.setHasModifiedDoc(true);
-              fileStore.updateProcessedContent(parsedData.processed_document);
+            // 更新内容
+            if (parsedData && parsedData.content) {
+              fullContent = parsedData.content;
+              onContent(fullContent);
+              console.log("更新内容，长度:", fullContent.length);
+            }
 
-              // 显示文档处理成功消息
-              antMessage.success('文档处理完成，正在获取预览...');
+            // 处理文档内容
+            if (parsedData && parsedData.processed_document) {
+              hasProcessedDocument = true;
 
-              // 触发文档处理完成事件，使前端能够自动获取并显示预览
-              const event = new CustomEvent('documentProcessed', {
-                detail: {
-                  fileId: fileStore.currentFile.id,
-                  timestamp: Date.now()
-                }
-              });
-              document.dispatchEvent(event);
+              if (fileStore.currentFile && fileStore.currentFile.id) {
+                fileStore.setHasModifiedDoc(true);
+                fileStore.updateProcessedContent(parsedData.processed_document);
 
-              // 创建文本Blob并触发修改后文档更新事件
-              try {
-                const textBlob = new Blob([parsedData.processed_document], { type: 'text/plain' });
+                // 显示文档处理成功消息
+                antMessage.success('文档处理完成，正在获取预览...');
 
-                // 触发修改后文档更新事件
-                const updateEvent = new CustomEvent('modifiedDocumentUpdated', {
+                // 触发文档处理完成事件，使前端能够自动获取并显示预览
+                const event = new CustomEvent('documentProcessed', {
                   detail: {
-                    blob: textBlob,
                     fileId: fileStore.currentFile.id,
                     timestamp: Date.now()
                   }
                 });
-                document.dispatchEvent(updateEvent);
-              } catch (e) {
-                console.error('创建文本Blob失败:', e);
+                document.dispatchEvent(event);
+
+                // 创建文本Blob并触发修改后文档更新事件
+                try {
+                  const textBlob = new Blob([parsedData.processed_document], { type: 'text/plain' });
+
+                  // 触发修改后文档更新事件
+                  const updateEvent = new CustomEvent('modifiedDocumentUpdated', {
+                    detail: {
+                      blob: textBlob,
+                      fileId: fileStore.currentFile.id,
+                      timestamp: Date.now()
+                    }
+                  });
+                  document.dispatchEvent(updateEvent);
+                } catch (e) {
+                  console.error('创建文本Blob失败:', e);
+                }
               }
             }
+          } catch (error) {
+            console.error('解析消息失败:', error, "原始数据:", data.substring(0, 100));
           }
-        } catch (error) {
-          console.error('解析消息失败:', error);
         }
       }
     }
@@ -219,14 +298,23 @@ export const sendChatRequest = async (
         document.dispatchEvent(event);
       }, 1000);
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error('请求错误:', error);
+    // 详细记录错误信息
+    if (error instanceof TypeError) {
+      console.error('网络错误，可能是CORS或网络连接问题:', error.message);
+    } else if (error.name === 'AbortError') {
+      console.error('请求被中止，可能是超时或用户取消:', error.message);
+    } else {
+      console.error('其他错误:', error.message);
+    }
     onError(error);
   } finally {
     // 清理资源
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
     }
+    controller = null;
   }
 };
 
@@ -240,13 +328,23 @@ export const healthCheck = async (): Promise<boolean> => {
     const timeoutId = setTimeout(() => controller.abort(), 5000);
 
     const response = await axiosInstance.get('/api/health-check', {
-      signal: controller.signal
+      signal: controller.signal,
+      timeout: 5000
     });
 
     clearTimeout(timeoutId);
-    return response.status === 200;
-  } catch (error) {
+    console.log('健康检查成功，服务正常运行');
+    return response.status === 200 && response.data?.status === 'ok';
+  } catch (error: any) {
     console.error('健康检查失败:', error);
+    // 输出更详细的错误信息
+    if (error.apiErrorType === 'server') {
+      console.error(`服务器返回错误: ${error.statusCode} ${error.statusText}`);
+    } else if (error.apiErrorType === 'timeout') {
+      console.error('健康检查超时，服务可能不可用');
+    } else {
+      console.error('网络错误，无法连接到后端服务');
+    }
     return false;
   }
 };
@@ -408,5 +506,30 @@ export const getLastProcessedDocument = async (chatId: string): Promise<string> 
   } catch (error) {
     console.error(`[${startTime}] 获取处理后文档内容出错:`, error);
     return '';
+  }
+};
+
+/**
+ * 检查API端点是否可用
+ * @param endpoint API端点路径
+ * @returns Promise<boolean> 端点是否可用
+ */
+export const checkEndpointAvailability = async (endpoint: string): Promise<boolean> => {
+  try {
+    console.log(`检查API端点可用性: ${endpoint}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+    const response = await axiosInstance.get(`/api/${endpoint}`, {
+      signal: controller.signal,
+      timeout: 3000
+    });
+
+    clearTimeout(timeoutId);
+    console.log(`API端点 ${endpoint} 检查成功，状态: ${response.status}`);
+    return response.status >= 200 && response.status < 300;
+  } catch (error: any) {
+    console.error(`API端点 ${endpoint} 检查失败:`, error.message);
+    return false;
   }
 }; 

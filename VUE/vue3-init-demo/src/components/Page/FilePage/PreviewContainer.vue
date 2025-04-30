@@ -305,7 +305,8 @@ const renderModifiedDocPreview = async () => {
               }
             } else {
               console.error('经过多次尝试，预览容器仍然不存在');
-              modifiedError.value = '预览容器不可用，请刷新页面';
+              // 不设置错误状态，只是log，避免不必要的UI错误显示
+              // modifiedError.value = '预览容器不可用，请刷新页面';
             }
           }, 500);
         } else {
@@ -348,7 +349,8 @@ const renderModifiedDocPreview = async () => {
     await renderModifiedDocContent();
   } catch (error) {
     console.error('修改后文档加载失败:', error);
-    modifiedError.value = error?.message || '未知错误';
+    // 不设置错误状态，只是log，避免不必要的UI错误显示
+    // modifiedError.value = error?.message || '未知错误';
   }
 }
 

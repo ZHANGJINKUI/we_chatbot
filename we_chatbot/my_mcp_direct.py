@@ -113,7 +113,7 @@ def test_add():
 def test_correction():
     """测试纠错功能"""
     print("\n=== 测试拼写纠错功能 ===")
-    print("注意: 如果没有设置DeepSeek API密钥，此测试可能会超时")
+    print("注意: 如果没有设置Qwen API密钥，此测试可能会超时")
     # 包含错别字的文本
     text = "我是一只光茫的共产党员，要紧跟时代潮流行进"  # "光茫"应为"光荣"
     result = call_mcp_direct("纠错算法", {"text": text}, timeout=20)
@@ -122,7 +122,7 @@ def test_correction():
 if __name__ == "__main__":
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='测试MCP服务直接调用')
-    parser.add_argument('--skip-correction', action='store_true', help='跳过纠错功能测试（需要DeepSeek API）')
+    parser.add_argument('--skip-correction', action='store_true', help='跳过纠错功能测试（需要Qwen API）')
     args = parser.parse_args()
 
     # 测试结果字典

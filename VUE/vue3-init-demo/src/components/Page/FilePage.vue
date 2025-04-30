@@ -10,8 +10,14 @@
             :before-upload="beforeUpload"
             :show-upload-list="false"
             :loading="loadingUpload"
+            :disabled="isProcessing"
           >
-            <a-button type="primary" :loading="loadingUpload">
+            <a-button 
+              type="primary" 
+              :loading="loadingUpload" 
+              :disabled="isProcessing"
+              :title="isProcessing ? '文档处理中，请等待处理完成后再上传文件' : ''"
+            >
               <template #icon><upload-outlined /></template>
               上传文件
             </a-button>
@@ -72,7 +78,7 @@ const authStore = useAuthStore()
 const chatStore = useChatStore()
 
 // 状态引用
-const { hasModifiedDoc } = storeToRefs(fileStore)
+const { hasModifiedDoc, isProcessing } = storeToRefs(fileStore)
 const file = computed(() => fileStore.currentFile)
 const currentFileId = computed(() => fileStore.currentFile.id)
 const chat = computed(() => chatStore.currentChat)
@@ -185,6 +191,9 @@ const processDocument = async (fileId?: string, chatId?: string, forced = false)
     return false;
   }
   
+  // 设置处理状态为true
+  fileStore.setProcessingStatus(true);
+  
   // 处理文档
   try {
     console.log(`[${startTime}] 开始通过WeChatbotService处理文档`);
@@ -203,6 +212,9 @@ const processDocument = async (fileId?: string, chatId?: string, forced = false)
     console.error(`[${startTime}] 文档处理错误:`, error);
     message.error('文档处理出错，将尝试重新获取预览');
     return false;
+  } finally {
+    // 处理完成后，设置处理状态为false
+    fileStore.setProcessingStatus(false);
   }
 };
 
@@ -212,6 +224,9 @@ const handleModifiedDocumentUpdated = (event: any) => {
   console.log(`[${eventTime}] 收到修改后文档更新事件:`, event.detail);
   
   const { blob, fileId, chatId } = event.detail;
+  
+  // 确保重置处理状态
+  fileStore.setProcessingStatus(false);
   
   // 验证数据
   if (fileId && file.value && file.value.id === fileId) {
@@ -305,6 +320,9 @@ const handleModifiedDocumentUpdated = (event: any) => {
   } else {
     console.log(`[${eventTime}] 文件ID不匹配，忽略更新: 当前=${file.value?.id}, 事件=${fileId}`);
   }
+  
+  // 确保更新状态
+  fileStore.setProcessingStatus(false);
 };
 
 // 处理文档预览错误事件
@@ -329,6 +347,9 @@ const handleDocumentProcessed = async (event: any) => {
   console.log(`[${eventTime}] 收到文档处理完成事件:`, event.detail);
   
   const { fileId, timestamp } = event.detail;
+  
+  // 确保重置处理状态
+  fileStore.setProcessingStatus(false);
   
   // 更新状态
   if (fileId && fileId === file.value?.id) {
@@ -420,6 +441,9 @@ const handleDocumentProcessed = async (event: any) => {
       }
     }
   }
+  
+  // 确保更新状态
+  fileStore.setProcessingStatus(false);
 };
 
 /**
@@ -457,6 +481,12 @@ const handleDocumentPreviewReady = (event: any) => {
 
 // 上传前检查
 const beforeUpload = async (file: File): Promise<boolean> => {
+  // 如果文件正在处理中，不允许上传
+  if (isProcessing.value) {
+    message.warning('文档处理中，请等待处理完成后再上传文件');
+    return false;
+  }
+  
   const isWord = 
     file.type === 'application/msword' || 
     file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
@@ -538,6 +568,12 @@ const handleDocumentUpdate = (event: CustomEvent) => {
 watch(
   () => currentFileId.value,
   async newFileId => {
+    // 如果文件正在处理中，则不执行切换
+    if (fileStore.isProcessing) {
+      message.warning('文档处理中，请等待处理完成后再切换文件');
+      return;
+    }
+    
     if (newFileId) {
       const startTime = new Date().toISOString();
       console.log(`[${startTime}] 当前文件ID: ${newFileId}, 文件名: ${file.value.filename}`);
@@ -738,6 +774,12 @@ const handleFileChanged = async (event: CustomEvent) => {
   const eventTime = new Date().toISOString();
   console.log(`[${eventTime}] 收到文件切换事件:`, event.detail);
   
+  // 如果文件正在处理中，则不执行切换
+  if (fileStore.isProcessing) {
+    message.warning('文档处理中，请等待处理完成后再切换文件');
+    return;
+  }
+  
   const { fileId, filename } = event.detail;
   if (!fileId) return;
   
@@ -750,39 +792,14 @@ const handleFileChanged = async (event: CustomEvent) => {
     localStorage.setItem('document_processed', 'false');
     localStorage.removeItem('last_processed_file_id');
     
+    // 更新界面显示为加载中
     loadingPreview.value = true;
     
-    // 使用document API切换文档
-    const switchResult = await documentApi.switchDocument(fileId);
-    
-    if (switchResult && switchResult.status === 'success') {
-      // 更新当前文件信息
-      const result = switchResult;
-      fileStore.setCurrentFile({
-        id: result.document_id,
-        userid: fileStore.currentFile.userid, // 保留当前用户ID
-        filename: result.filename,
-        fileuuid: fileStore.currentFile.fileuuid || '',
-        fileurl: fileStore.currentFile.fileurl || '',
-        updatetime: new Date().toISOString()
-      });
-      
-      // 获取原始文档预览
-      await fetchOriginalPreview(fileId);
-    } else {
-      // 如果document/switch API失败，仍然尝试获取原始预览
-      await fetchOriginalPreview(fileId);
-    }
+    // 获取原始文档预览
+    await fetchOriginalPreview(fileId);
   } catch (error) {
-    console.error(`[${eventTime}] 切换文件失败:`, error);
+    console.error(`[${eventTime}] 处理文件切换事件出错:`, error);
     message.error('切换文件失败，请重试');
-    
-    // 出错时尝试使用原始方法
-    try {
-      await fetchOriginalPreview(fileId);
-    } catch (e) {
-      console.error(`[${eventTime}] 备用方法获取预览也失败:`, e);
-    }
   } finally {
     loadingPreview.value = false;
   }

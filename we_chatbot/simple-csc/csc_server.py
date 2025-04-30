@@ -16,15 +16,15 @@ root_dir = current_dir.parent.parent
 # 构建.env文件的路径
 dotenv_path = root_dir / '.env'
 load_dotenv(dotenv_path)
-# 获取DeepSeek API认证信息
-deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
-deepseek_base_url = os.getenv("DEEPSEEK_API_BASE")
+# 获取Qwen API认证信息
+qwen_api_key = os.getenv("QWEN_API_KEY")
+qwen_base_url = os.getenv("QWEN_BASE_URL")
 
 # 打印环境变量检查
-if deepseek_api_key and deepseek_base_url:
-    print(f"已加载DeepSeek API配置: base_url={deepseek_base_url}, key={deepseek_api_key[:5]}***")
+if qwen_api_key and qwen_base_url:
+    print(f"已加载Qwen API配置: base_url={qwen_base_url}, key={qwen_api_key[:5]}***")
 else:
-    print(f"⚠️ 警告: DeepSeek API配置未找到，尝试从 {dotenv_path} 加载但未成功")
+    print(f"⚠️ 警告: Qwen API配置未找到，尝试从 {dotenv_path} 加载但未成功")
 
 # 创建MCP服务器实例 - 这是langgraph通过SimpleMCPTool调用的服务入口
 mcp = FastMCP("CSC服务器")
@@ -371,11 +371,11 @@ async def async_correct_text(text: str) -> Dict[str, Any]:
         包含纠错结果的字典
     """
     try:
-        # 使用DeepSeek API进行文本纠错
+        # 使用Qwen API进行文本纠错
         llm = ChatOpenAI(
-            model="deepseek-chat", 
-            api_key=deepseek_api_key,
-            base_url=deepseek_base_url
+            model="qwen-max",
+            api_key=qwen_api_key,
+            base_url=qwen_base_url
         )
         
         messages = [
@@ -406,11 +406,11 @@ def correct_text(text: str) -> Dict[str, Any]:
         包含纠错结果的字典
     """
     try:
-        # 使用DeepSeek API进行文本纠错
+        # 使用Qwen API进行文本纠错
         llm = ChatOpenAI(
-            model="deepseek-chat", 
-            api_key=deepseek_api_key,
-            base_url=deepseek_base_url
+            model="qwen-max",
+            api_key=qwen_api_key,
+            base_url=qwen_base_url
         )
         
         messages = [
@@ -441,11 +441,11 @@ def polish_text(text: str) -> Dict[str, Any]:
         包含润色结果的字典
     """
     try:
-        # 使用DeepSeek API进行文本润色
+        # 使用Qwen API进行文本润色
         llm = ChatOpenAI(
-            model="deepseek-chat", 
-            api_key=deepseek_api_key,
-            base_url=deepseek_base_url
+            model="qwen-max",
+            api_key=qwen_api_key,
+            base_url=qwen_base_url
         )
         
         messages = [
@@ -476,11 +476,11 @@ def summarize_text(text: str) -> Dict[str, Any]:
         包含总结结果的字典
     """
     try:
-        # 使用DeepSeek API进行文本总结
+        # 使用Qwen API进行文本总结
         llm = ChatOpenAI(
-            model="deepseek-chat", 
-            api_key=deepseek_api_key,
-            base_url=deepseek_base_url
+            model="qwen-max",
+            api_key=qwen_api_key,
+            base_url=qwen_base_url
         )
         
         messages = [
@@ -505,7 +505,7 @@ if __name__ == "__main__":
     # 以标准 I/O 方式运行 MCP 服务器
     print("CSC服务启动...")
     # 检查环境变量
-    print(f"DeepSeek API 配置: key={deepseek_api_key[:5] + '***' if deepseek_api_key else 'None'}, base_url={deepseek_base_url if deepseek_base_url else 'None'}")
+    print(f"Qwen API 配置: key={qwen_api_key[:5] + '***' if qwen_api_key else 'None'}, base_url={qwen_base_url if qwen_base_url else 'None'}")
     
     try:
         # 运行MCP服务

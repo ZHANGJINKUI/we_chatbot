@@ -26,6 +26,14 @@ interface SwitchDocumentResult {
 export const useFileStore = defineStore('file', () => {
   const fileListData = ref<FileItem[]>([])
   const loadingFetchList = ref<boolean>(false)
+  // 文档处理状态标志
+  const isProcessing = ref<boolean>(false)
+
+  // 设置文档处理状态
+  const setProcessingStatus = (status: boolean) => {
+    isProcessing.value = status
+  }
+
   // 请求文件列表
   const fetchFileList = async (params: FileListRequest) => {
     try {
@@ -319,8 +327,8 @@ export const useFileStore = defineStore('file', () => {
     setCurrentFile,
     deleteFile,
     loadingUpload,
-    uploadFile,
     uploadFileList,
+    uploadFile,
     loadingDownload,
     downloadFile,
     previewFile,
@@ -332,6 +340,8 @@ export const useFileStore = defineStore('file', () => {
     updateProcessedContent,
     getProcessedContent,
     getOriginalContent,
-    switchDocument
+    switchDocument,
+    isProcessing,
+    setProcessingStatus
   }
 })

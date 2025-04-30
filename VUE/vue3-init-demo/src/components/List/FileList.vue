@@ -2,11 +2,17 @@
   <a-spin v-if="loadingFetchList" class="loading-container" />
   <a-empty v-if="!loadingFetchList && fileListData.length === 0" description="暂无数据" />
   <div v-else class="panel-content">
-    <div v-for="(item, index) in fileListData" :key="index" class="trigger">
-      <span class="ellipsis" @click="onFileClick(item)">
+    <div v-for="(item, index) in fileListData" :key="index" 
+         :class="['trigger', { 'disabled': isProcessing }]" 
+         :title="isProcessing ? '文档处理中，请等待处理完成后再切换文件' : ''"
+         @click="onFileClick(item)">
+      <span class="ellipsis">
         <FileWordOutlined style="margin-right: 8px" />{{ item.filename }}
       </span>
-      <CloseCircleOutlined class="fade-div" @click="showConfirm(item)" />
+      <CloseCircleOutlined 
+        class="fade-div" 
+        :class="{ 'disabled-icon': isProcessing }" 
+        @click.stop="isProcessing ? message.warning('文档处理中，请等待处理完成后再操作') : showConfirm(item)" />
     </div>
   </div>
 </template>
@@ -31,7 +37,7 @@ defineOptions({
 
 const fileStore = useFileStore()
 const authStore = useAuthStore()
-const { loadingFetchList, fileListData } = storeToRefs(fileStore)
+const { loadingFetchList, fileListData, isProcessing } = storeToRefs(fileStore)
 
 // 获取文件列表数据
 const fetchFileList = async () => {
@@ -48,6 +54,12 @@ onMounted(() => {
 
 // 打开文件
 const onFileClick = async (item: FileItem) => {
+  // 如果文件正在处理中，不允许切换文件
+  if (isProcessing.value) {
+    message.warning('文档处理中，请等待处理完成后再切换文件')
+    return
+  }
+  
   try {
     message.info(`打开文件: ${item.filename}`)
     // 1. 设置当前文件
@@ -68,6 +80,12 @@ const onFileClick = async (item: FileItem) => {
 
 // 删除文件
 const showConfirm = (item: { id: string; filename: string }) => {
+  // 如果文件正在处理中，不允许删除文件
+  if (isProcessing.value) {
+    message.warning('文档处理中，请等待处理完成后再操作')
+    return
+  }
+  
   Modal.confirm({
     title: '删除提示',
     icon: h(ExclamationCircleOutlined),
@@ -151,5 +169,24 @@ watch(
   border-radius: 8px;
   background-color: #e0eef8;
   cursor: pointer;
+}
+
+/* 添加处理中的禁用样式 */
+.disabled {
+  opacity: 0.6;
+  cursor: not-allowed !important;
+}
+
+.disabled:hover {
+  background-color: #f0f0f0 !important;
+}
+
+.disabled-icon {
+  opacity: 0 !important;
+  cursor: not-allowed !important;
+}
+
+.disabled .ellipsis {
+  cursor: not-allowed !important;
 }
 </style>

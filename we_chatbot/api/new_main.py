@@ -52,11 +52,11 @@ TEMP_DIR = tempfile.gettempdir()
 
 # 加载环境变量和初始化模型
 load_dotenv()
-deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
-deepseek_base_url = os.getenv("DEEPSEEK_API_BASE")
-os.environ["OPENAI_API_KEY"] = deepseek_api_key
-os.environ["OPENAI_API_BASE"] = deepseek_base_url
-llm = ChatOpenAI(model="deepseek-chat")
+qwen_api_key = os.getenv("QWEN_API_KEY")
+qwen_base_url = os.getenv("QWEN_BASE_URL")
+os.environ["OPENAI_API_KEY"] = qwen_api_key
+os.environ["OPENAI_API_BASE"] = qwen_base_url
+llm = ChatOpenAI(model="qwen-max")
 
 # 闲聊计数器 - 全局变量
 chat_counter = {}
@@ -327,12 +327,12 @@ async def chat_endpoint(chat_request: ChatRequest, request: Request):
             messages.append({"role": "user", "content": chat_request.message})
             
             # 构建系统提示
-            system_prompt = """你是小公，一个智能公文助手。
+            system_prompt = """你是政务公文智能体，一个智能公文助手。
 当用户询问你的身份、名字、是谁、介绍自己等类似问题时，必须回答：
-"我是小公，您的智能公文助手！"
+"我是政务公文智能体，您的智能公文助手！"
 
 请以自然、友好的方式回答用户的其他问题。
-记住，不要透露你是AI、大模型或DeepSeek Chat，而应始终以我是小公身份回答。"""
+记住，不要透露你是AI、大模型或Qwen Chat，而应始终以我是政务公文智能体身份回答。"""
             
             # 添加系统消息到开始
             full_messages = [{"role": "system", "content": system_prompt}] + messages
@@ -373,4 +373,7 @@ async def download_result():
         # 检查文件是否存在
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail="处理结果文件不存在")
-        return FileResponse(
+        return FileResponse(file_path, filename="processed_document.docx")
+    except Exception as e:
+        print(f"下载结果文件时出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"下载结果文件时出错: {str(e)}")

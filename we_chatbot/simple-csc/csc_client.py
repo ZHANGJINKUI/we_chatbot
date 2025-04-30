@@ -116,7 +116,7 @@ class MCPClient:
                 if query.lower() == 'exit':
                     break
                 response = await self.process_query(query)  # 发送用户输入到 OpenAI API
-                print(f"\n🤖 DeepseekV3: {response}")
+                print(f"\n🤖 QwenMax: {response}")
             except Exception as e:
                 print(f"\n⚠️ 发生错误: {str(e)}")
 

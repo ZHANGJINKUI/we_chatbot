@@ -7,11 +7,11 @@ from .tools import SimpleMCPTool
 
 # 加载API
 load_dotenv()
-deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
-deepseek_base_url = os.getenv("DEEPSEEK_API_BASE")
-os.environ["OPENAI_API_KEY"] = deepseek_api_key
-os.environ["OPENAI_API_BASE"] = deepseek_base_url
-llm = ChatOpenAI(model="deepseek-chat")
+qwen_api_key = os.getenv("QWEN_API_KEY")
+qwen_base_url = os.getenv("QWEN_BASE_URL")
+os.environ["OPENAI_API_KEY"] = qwen_api_key
+os.environ["OPENAI_API_BASE"] = qwen_base_url
+llm = ChatOpenAI(model="qwen-max")
 
 # 初始化工具
 csc_tool = SimpleMCPTool()

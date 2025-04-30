@@ -4,10 +4,10 @@
             <a-menu v-model:selectedKeys="current" mode="horizontal" :items="items" @click="onMenuClik" />
         </div>
         <div class="main flex-content">
-            <div v-if="showFilePage" class="file-container">
+            <div v-show="showFilePage" class="file-container">
                 <file-page />
             </div>
-            <div v-if="showChatPage"
+            <div v-show="showChatPage"
                 :class="['chat-container', showFilePage ? 'chat-container-fixed' : 'chat-container-flex']">
                 <chat-page />
             </div>

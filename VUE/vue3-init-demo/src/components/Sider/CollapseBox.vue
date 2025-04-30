@@ -16,10 +16,15 @@
           :max-count="1"
           accept=".doc,.docx"
           class="upload-full-width"
+          :disabled="isProcessing"
         >
-          <a-button class="btn-css" :icon="h(CloudUploadOutlined)" :loading="loadingUpload"
-            >上传新文件</a-button
-          >
+          <a-button 
+            class="btn-css" 
+            :icon="h(CloudUploadOutlined)" 
+            :loading="loadingUpload"
+            :disabled="isProcessing"
+            :title="isProcessing ? '文档处理中，请等待处理完成后再上传文件' : ''"
+          >上传新文件</a-button>
         </a-upload>
       </div>
       <a-collapse-panel key="1" header="文件列表" class="collapse-panel">
@@ -39,7 +44,8 @@
   <div class="icon-container" v-else>
     <a-tooltip placement="right">
       <template #title>
-        <span>上传新文件</span>
+        <span v-if="isProcessing">文档处理中，请等待处理完成后再上传文件</span>
+        <span v-else>上传新文件</span>
       </template>
       <a-upload
         v-model:file-list="uploadFileList"
@@ -49,6 +55,7 @@
         :max-count="1"
         accept=".doc,.docx"
         class="upload-full-width"
+        :disabled="isProcessing"
       >
         <LoadingOutlined
           v-if="loadingUpload"
@@ -56,7 +63,12 @@
         />
         <CloudUploadOutlined
           v-else
-          :style="{ fontSize: '32px', color: '#6f9edc', marginBottom: '20px', cursor: 'pointer' }"
+          :style="{ 
+            fontSize: '32px', 
+            color: isProcessing ? '#c0c0c0' : '#6f9edc', 
+            marginBottom: '20px', 
+            cursor: isProcessing ? 'not-allowed' : 'pointer' 
+          }"
         />
       </a-upload>
     </a-tooltip>
@@ -106,9 +118,15 @@ const fileStore = useFileStore()
 const authStore = useAuthStore()
 const chatStore = useChatStore()
 
-const { loadingUpload, uploadFileList } = storeToRefs(fileStore)
+const { loadingUpload, uploadFileList, isProcessing } = storeToRefs(fileStore)
 // 自定义上传
 const customUpload: UploadProps['beforeUpload'] = async (file, _fileList) => {
+  // 如果文件正在处理中，不允许上传
+  if (isProcessing.value) {
+    message.warning('文档处理中，请等待处理完成后再上传文件');
+    return false;
+  }
+  
   const isWord =
     file.type === 'application/msword' ||
     file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||

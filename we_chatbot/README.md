@@ -55,8 +55,8 @@
 4. 配置环境变量：
    创建或编辑`.env`文件，添加以下内容（根据实际情况修改）：
    ```
-   DEEPSEEK_API_KEY=your_api_key_here
-   DEEPSEEK_API_BASE=your_api_base_url_here
+   QWEN_API_KEY=your_api_key_here
+   QWEN_BASE_URL=your_api_base_url_here
    ```
 
 ### 前端设置
