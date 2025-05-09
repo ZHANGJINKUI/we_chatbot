@@ -80,6 +80,24 @@ SUMMARY_SYSTEM_PROMPT = """你是一个专业的文本总结工具，专注于�
 }
 """
 
+# 写作系统提示词
+WRITING_SYSTEM_PROMPT = """你是一个专业的公文写作工具，专注于根据用户指令生成高质量的政务公文。
+
+请严格按照以下公文写作标准进行工作：
+1. 文体格式：根据用户要求的文件类型（如报告、通知、请示、总结等），遵循相应公文的标准格式和结构。
+2. 语言风格：使用规范、严谨、简明、准确的公文语言，保持庄重的官方语气。避免口语化、网络化的表达方式。
+3. 内容组织：条理清晰，层次分明，逻辑性强，要点突出。
+4. 专业性：符合政务公文的用词习惯和表达方式，如"研究决定"、"切实加强"、"认真落实"等常见公文表述。
+5. 完整性：确保公文内容完整，包括必要的标题、正文、落款等要素。
+
+请根据用户的写作要求，生成一篇完整的公文。
+
+输出格式（必须严格遵守以下JSON格式）：
+{
+  "writing_content": "这里是生成的公文内容，格式应符合公文标准",
+  "reply_message": "这里是简短的回复用户的消息，解释你完成了写作任务"
+}"""
+
 # 共享的内容解析函数
 def parse_correction_content(content: str, original_text: str) -> Dict[str, Any]:
     """
@@ -263,6 +281,55 @@ def parse_summary_content(content: str, original_text: str) -> Dict[str, Any]:
     return {
         "summary_text": summary_text,
         "key_points": formatted_key_points,
+        "status": "success"
+    }
+
+# 解析写作内容的函数
+def parse_writing_content(content: str, prompt: str) -> Dict[str, Any]:
+    """
+    解析模型返回的写作内容
+    
+    参数:
+        content: 模型返回的内容
+        prompt: 原始写作提示
+        
+    返回:
+        解析后的结果字典
+    """
+    writing_content = ""
+    reply_message = ""
+    
+    try:
+        if '{' in content and '}' in content:
+            # 尝试解析JSON格式
+            json_start = content.find('{')
+            json_end = content.rfind('}') + 1
+            json_str = content[json_start:json_end]
+            
+            data = json.loads(json_str)
+            writing_content = data.get('writing_content', "")
+            reply_message = data.get('reply_message', "我已根据您的要求完成了文档写作。")
+        elif "写作内容:" in content and "回复消息:" in content:
+            # 兼容旧格式
+            parts = content.split("回复消息:")
+            writing_content = parts[0].replace("写作内容:", "").strip()
+            reply_message = parts[1].strip()
+        else:
+            # 如果不符合预期格式，将整个内容作为写作内容
+            writing_content = content
+            reply_message = "我已根据您的要求完成了文档写作。"
+    except Exception as e:
+        print(f"解析错误: {e}")
+        writing_content = f"写作过程中出现错误: {str(e)}"
+        reply_message = "在处理您的写作请求时遇到了问题，请重试。"
+    
+    # 格式化输出
+    formatted_output = f"写作内容:\n{writing_content}\n\n回复消息:\n{reply_message}"
+    
+    return {
+        "writing_content": writing_content,
+        "reply_message": reply_message,
+        "formatted_output": formatted_output,
         "status": "success"
     }
 
@@ -499,6 +566,77 @@ def summarize_text(text: str) -> Dict[str, Any]:
             "summary_text": "无法生成总结，处理出错",
             "key_points": f"错误: {str(e)}",
             "status": "error"
+        }
+
+# 在文件末尾添加写作工具
+
+@mcp.tool(
+    name='写作工具',
+    description='如果用户需要写作一篇文档、报告、方案等，提供这个写作工具，根据用户的要求生成符合公文规范的文档内容。'
+)
+def writing(text: str) -> str:
+    """
+    根据用户提供的指令生成符合公文规范的文档
+    
+    参数:
+        text: 用户的写作指令
+        
+    返回:
+        生成的公文内容和回复消息
+    """
+    print(f"写作工具接收到请求: {text[:50]}..." if len(text) > 50 else f"写作工具接收到请求: {text}")
+    
+    try:
+        # 调用写作功能
+        result = writing_text(text)
+        return result["formatted_output"]
+    except Exception as e:
+        import traceback
+        print(f"写作工具处理错误: {e}")
+        print(traceback.format_exc())
+        return f"写作过程中出现错误: {str(e)}"
+
+def writing_text(prompt: str) -> Dict[str, Any]:
+    """
+    使用大模型生成公文内容
+    
+    参数:
+        prompt: 用户的写作指令
+        
+    返回:
+        写作结果
+    """
+    try:
+        # 使用openai大模型进行写作
+        model = ChatOpenAI(
+            model="qwen-max",
+            api_key=qwen_api_key,
+            base_url=qwen_base_url,
+            temperature=0.3,  # 稍微提高温度以增加创造性
+            max_tokens=8000  # 增加最大token数以支持更长的公文
+        )
+        
+        # 构建提示
+        messages = [
+            {"role": "system", "content": WRITING_SYSTEM_PROMPT},
+            {"role": "user", "content": f"请根据以下要求写一篇公文：\n{prompt}"}
+        ]
+        
+        # 调用模型
+        response = model.invoke(messages)
+        content = response.content
+        
+        # 解析内容
+        result = parse_writing_content(content, prompt)
+        return result
+    except Exception as e:
+        import traceback
+        print(f"写作文本错误: {e}")
+        print(traceback.format_exc())
+        return {
+            "status": "error", 
+            "message": f"写作文本失败: {str(e)}",
+            "formatted_output": f"写作内容:\n写作过程中出现错误: {str(e)}\n\n回复消息:\n在处理您的写作请求时遇到了问题，请重试。"
         }
 
 if __name__ == "__main__":

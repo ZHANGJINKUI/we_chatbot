@@ -31,6 +31,7 @@ import my_agent.agent_tools
 from docx import Document
 import io
 import uuid
+import time
 
 # 定义存储文件路径
 DATA_DIR = Path(__file__).parent / "data"
@@ -920,12 +921,12 @@ async def chat_endpoint(chat_request: ChatRequest, request: Request):
             messages.append({"role": "user", "content": chat_request.message})
             
             # 构建系统提示
-            system_prompt = """你是小公，一个智能公文助手。
+            system_prompt = """你是政务公文智能体，一个智能公文写作助手。
 当用户询问你的身份、名字、是谁、介绍自己等类似问题时，必须回答：
-"我是小公，您的智能公文助手！"
-
+"我是政务公文智能体，您的智能公文写作助手！"
+你可以完成政务公文写作、润色、纠错、总结任务。
 请以自然、友好的方式回答用户的其他问题。
-记住，不要透露你是AI、大模型或Qwen Chat，而应始终以我是小公身份回答。"""
+记住，不要透露你是AI、大模型或Qwen Chat，而应始终以我是政务公文智能体身份回答。"""
             
             # 添加系统消息到开始
             full_messages = [{"role": "system", "content": system_prompt}] + messages
@@ -965,34 +966,125 @@ async def chat_endpoint(chat_request: ChatRequest, request: Request):
         raise HTTPException(status_code=500, detail=f"处理聊天请求时出错: {str(e)}")
 
 @app.get("/api/download-result")
-async def download_result(chatId: str = None):
-    """下载处理结果文件"""
+async def download_result(chatId: str = None, docType: str = "modified"):
+    """
+    下载处理后的文档或写作文档
+    
+    参数:
+        chatId: 聊天ID
+        docType: 文档类型，支持"modified"(修改后文档) 和 "writing"(写作文档)，默认为modified
+    
+    返回:
+        处理后的文档或写作文档的二进制内容
+    """
+    if not chatId:
+        raise HTTPException(status_code=400, detail="缺少chatId参数")
+    
     try:
-        # 直接使用last_uploaded_document中的处理后内容
-        if not last_uploaded_document or not last_uploaded_document.get("processed_content"):
-            raise HTTPException(status_code=404, detail="处理结果文件不存在")
+        # 检查这个聊天关联的文档
+        matching_document = None
+        matching_document_id = None
         
-        # 获取处理后的内容
-        content = last_uploaded_document.get("processed_content")
+        if docType == "writing":
+            # 先尝试查找最新的写作文档
+            writing_prefix = f"writing_{chatId}_"
+            latest_doc = None
+            latest_timestamp = 0
+            
+            # 遍历文档找到最新的写作文档
+            for doc_id, doc in document_storage.documents.items():
+                if doc_id.startswith(writing_prefix):
+                    # 提取时间戳并比较
+                    try:
+                        # writing_chatId_timestamp 格式
+                        timestamp_str = doc_id.split('_')[-1]
+                        timestamp = int(timestamp_str)
+                        if timestamp > latest_timestamp:
+                            latest_timestamp = timestamp
+                            latest_doc = doc
+                            matching_document_id = doc_id
+                    except (ValueError, IndexError):
+                        continue
+            
+            if latest_doc:
+                matching_document = latest_doc
+                print(f"找到最新的写作文档: {matching_document_id}, 时间戳: {latest_timestamp}")
+            
+            # 如果找不到写作文档，查找其他写作相关文档
+            if not matching_document:
+                for doc_id, doc in document_storage.documents.items():
+                    if "writing" in doc_id and doc.get("has_processed_binary", False):
+                        matching_document = doc
+                        matching_document_id = doc_id
+                        print(f"找到相关写作文档: {doc_id}")
+                        break
+        else:
+            # 处理修改后文档
+            # 查找与chat_id关联的历史或当前文档
+            for doc_id, doc in document_storage.documents.items():
+                # 首先查找处理后的文档
+                if doc.get("has_processed_binary", False):
+                    matching_document = doc
+                    matching_document_id = doc_id
+                    print(f"找到具有处理后内容的文档: {doc_id}")
+                    break
+            
+            # 如果没找到，则使用上次上传的文档
+            if not matching_document and last_uploaded_document:
+                doc_id = last_uploaded_document.get("document_id")
+                if doc_id and doc_id in document_storage.documents:
+                    matching_document = document_storage.documents[doc_id]
+                    matching_document_id = doc_id
+                    print(f"使用last_uploaded_document: {doc_id}")
         
-        # 生成时间戳
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        filename = last_uploaded_document.get("filename", "processed_document.docx")
-        filename_base = filename.rsplit(".", 1)[0]
-        download_filename = f"{filename_base}_processed_{timestamp}.docx"
+        if not matching_document:
+            raise HTTPException(status_code=404, detail="找不到与该聊天关联的文档")
         
-        # 将文本内容转换为docx
-        doc_bytes = convert_text_to_docx_bytes(content)
+        # 生成文件名
+        now = datetime.now().strftime('%Y%m%d%H%M%S')
+        if docType == "writing":
+            filename = f"writing_document_{now}.docx"
+        else:
+            filename = f"processed_{matching_document.get('filename', 'document.docx')}"
+        
+        # 获取处理后的二进制内容
+        if matching_document.get("has_processed_binary", False):
+            # 返回处理后的二进制内容
+            processed_binary = document_storage.file_contents.get(f"{matching_document_id}_processed")
+            if processed_binary:
+                return Response(
+                    content=processed_binary,
+                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"}
+                )
+        
+        # 获取处理后的文本内容
+        processed_content = matching_document.get("processed_content", "")
+        if not processed_content:
+            # 文档内容为空，尝试获取原始内容
+            processed_content = matching_document.get("content", "")
+            
+        if not processed_content:
+            raise HTTPException(status_code=404, detail="找不到可下载的文档内容")
+        
+        # 获取原始二进制内容作为模板
+        original_binary = None
+        if matching_document_id in document_storage.file_contents:
+            original_binary = document_storage.file_contents[matching_document_id]
+        
+        # 将文本内容转换为docx并返回，使用原始文档作为模板
+        doc_bytes = convert_text_to_docx_bytes(processed_content, original_binary)
         
         return Response(
             content=doc_bytes,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(download_filename)}"}        )
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
     except Exception as e:
-        print(f"下载文件时出错: {str(e)}")
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=f"下载文件时出错: {str(e)}")
+        print(f"下载文档失败: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"下载文档失败: {str(e)}")
 
 @app.post("/api/save-document")
 async def save_document(request: SaveDocumentRequest):
@@ -1197,6 +1289,7 @@ async def stream_chat(request: Request, message: str, document_content: str = No
                 
                 # 添加详细日志，记录每个模式的匹配结果
                 print(f"尝试匹配文本提取模式，原始消息: '{message}'")
+                
                 extracted_text = None
                 
                 for pattern in correction_patterns:
@@ -1215,15 +1308,21 @@ async def stream_chat(request: Request, message: str, document_content: str = No
                     input_text_for_correction = message
                     print(f"没有匹配到特定模式，使用整个消息作为纠错内容: '{input_text_for_correction}'")
                 
-                # 情况1: 用户提供了要直接纠错的文本
-                if input_text_for_correction:
+                # 情况1: 用户提供了要直接纠错的文本，或者是写作指令
+                if input_text_for_correction or intent_type == "writing":
                     # 发送处理状态
-                    yield f"data: {json.dumps({'content': '正在处理您提供的文本...'})}\n\n"
+                    yield f"data: {json.dumps({'content': '正在处理您的请求...'})}\n\n"
                     
                     # 根据意图选择不同的MCP工具
                     print(f"根据意图'{intent_type}'选择MCP工具...")
                     try:
-                        if intent_type == "polish" or "润色" in message:
+                        if intent_type == "writing":
+                            # 调用写作工具
+                            print("调用MCP写作工具处理指令...")
+                            # 使用整个消息作为写作提示
+                            mcp_result = call_mcp_service("写作工具", {"text": message})
+                            tool_name = "写作"
+                        elif intent_type == "polish" or "润色" in message:
                             # 调用润色工具
                             print("调用MCP润色工具处理文本...")
                             mcp_result = call_mcp_service("润色工具", {"text": input_text_for_correction})
@@ -1243,8 +1342,71 @@ async def stream_chat(request: Request, message: str, document_content: str = No
                         
                         if mcp_result["status"] == "success":
                             result_text = mcp_result.get("result", "")
-                            result_message = f"已完成文本{tool_name}。\n\n{result_text}"
-                            print(f"MCP {tool_name}服务处理文本成功")
+                            
+                            # 处理写作工具的结果
+                            if tool_name == "写作":
+                                # 提取写作内容和回复消息
+                                try:
+                                    # 先尝试解析JSON格式
+                                    if '{' in result_text and '}' in result_text:
+                                        json_start = result_text.find('{')
+                                        json_end = result_text.rfind('}') + 1
+                                        json_str = result_text[json_start:json_end]
+                                        
+                                        data = json.loads(json_str)
+                                        writing_content = data.get('writing_content', "")
+                                        response_message = data.get('reply_message', "我已完成您的写作请求")
+                                    # 兼容旧格式的解析    
+                                    elif "写作内容:" in result_text and "回复消息:" in result_text:
+                                        parts = result_text.split("回复消息:")
+                                        writing_content = parts[0].replace("写作内容:", "").strip()
+                                        response_message = parts[1].strip()
+                                    else:
+                                        # 如果格式不符合预期，将整个结果作为文档内容返回
+                                        writing_content = result_text
+                                        response_message = "我已完成您的写作请求"
+                                    
+                                    # 返回两部分内容
+                                    yield f"data: {json.dumps({'content': response_message, 'processed_document': writing_content})}\n\n"
+                                    
+                                    # 如果有聊天ID，保存处理后的内容到文档存储
+                                    chat_history_data = json.loads(chat_history)
+                                    for item in chat_history_data:
+                                        if item.get("chat_id"):
+                                            chat_id = item.get("chat_id")
+                                            # 创建一个临时文档ID用于写作内容
+                                            document_id = f"writing_{chat_id}_{int(time.time())}"
+                                            
+                                            # 保存到文档存储
+                                            document_storage.add_document(document_id, f"写作文档_{datetime.now().strftime('%Y%m%d%H%M%S')}.docx", b"")
+                                            document_storage.update_processed_content(document_id, writing_content)
+                                            
+                                            # 更新全局变量，确保其他API可以访问到写作内容
+                                            if last_uploaded_document:
+                                                # 保存一份写作内容到last_uploaded_document
+                                                last_uploaded_document["processed_content"] = writing_content
+                                                last_uploaded_document["is_writing"] = True
+                                                print(f"已将写作内容保存到last_uploaded_document，内容长度: {len(writing_content)}")
+                                            
+                                            # 创建二进制文档
+                                            try:
+                                                docx_bytes = convert_text_to_docx_bytes(writing_content)
+                                                document_storage.update_processed_binary(document_id, docx_bytes)
+                                                print(f"已生成写作文档的二进制内容，大小: {len(docx_bytes)} 字节")
+                                            except Exception as e:
+                                                print(f"生成写作文档时出错: {str(e)}")
+                                            break
+                                    return
+                                except Exception as e:
+                                    print(f"解析写作结果出错: {str(e)}")
+                                    # 如果解析出错，直接返回原始内容
+                                    yield f"data: {json.dumps({'content': f'我已完成您的写作请求', 'processed_document': result_text})}\n\n"
+                                    return
+                            else:
+                                # 处理其他工具的结果
+                                result_message = f"已完成文本{tool_name}。\n\n{result_text}"
+                                print(f"MCP {tool_name}服务处理文本成功")
+                                yield f"data: {json.dumps({'content': result_message})}\n\n"
                         else:
                             raise Exception(f"MCP服务返回错误: {mcp_result.get('message', '未知错误')}")
                     except Exception as e:
@@ -1256,7 +1418,7 @@ async def stream_chat(request: Request, message: str, document_content: str = No
                         
                         doc_messages = [
                             {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": f"请对以下文本进行公文纠错:\n\n{input_text_for_correction}"}
+                            {"role": "user", "content": f"请对以下文本进行公文纠错:\n\n{input_text_for_correction or message}"}
                         ]
                         
                         try:
@@ -1267,10 +1429,10 @@ async def stream_chat(request: Request, message: str, document_content: str = No
                             result_message = f"已使用Qwen AI大模型处理您的文本。\n\n{corrected_text}"
                         except Exception as llm_error:
                             print(f"Qwen LLM调用失败: {str(llm_error)}")
-                            corrected_text = input_text_for_correction
+                            corrected_text = input_text_for_correction or message
                             result_message = f"处理失败: {str(llm_error)}。返回原始文本。"
-                    
-                    yield f"data: {json.dumps({'content': result_message})}\n\n"
+                        
+                        yield f"data: {json.dumps({'content': result_message})}\n\n"
                     
                 # 情况2: 需要处理上传的文档
                 elif not has_document:
@@ -1391,12 +1553,12 @@ async def stream_chat(request: Request, message: str, document_content: str = No
                 messages.append({"role": "user", "content": message})
                 
                 # 构建系统提示
-                system_prompt = """你是小公，一个智能公文助手。
+                system_prompt = """你是政务公文智能体，一个智能公文写作助手。
 当用户询问你的身份、名字、是谁、介绍自己等类似问题时，必须回答：
-"我是小公，您的智能公文助手！"
-
+"我是政务公文智能体，您的智能公文写作助手！"
+你可以完成政务公文写作、润色、纠错、总结任务。
 请以自然、友好的方式回答用户的其他问题。
-记住，不要透露你是AI、大模型或Qwen Chat，而应始终以我是小公身份回答。"""
+记住，不要透露你是AI、大模型或Qwen Chat，而应始终以我是政务公文智能体身份回答。"""
                 
                 # 添加系统消息到开始
                 full_messages = [{"role": "system", "content": system_prompt}]
@@ -2808,6 +2970,84 @@ def process_document_with_format_preservation(original_doc_bytes, modified_text)
 async def api_file_delete_adapter(id: str):
     """处理前端/api/delete/{id}请求，转发到file/delete处理程序"""
     return await file_delete_adapter(id)
+
+@app.get("/api/chat/processed-document")
+async def get_chat_processed_document(chat_id: str = None, timestamp: str = None):
+    """
+    获取与聊天相关的处理后文档内容
+    这个API专为写作功能设计，用于获取写作生成的文档内容
+    
+    参数:
+        chat_id: 聊天ID
+        timestamp: 时间戳（用于避免缓存）
+    
+    返回:
+        处理后的文档内容
+    """
+    if not chat_id:
+        raise HTTPException(status_code=400, detail="缺少chat_id参数")
+    
+    try:
+        # 查找与该聊天ID关联的最新写作文档
+        writing_prefix = f"writing_{chat_id}_"
+        latest_doc = None
+        latest_timestamp = 0
+        latest_doc_id = None
+        
+        print(f"查找chat_id {chat_id}的写作文档")
+        
+        # 遍历文档找到最新的写作文档
+        for doc_id, doc in document_storage.documents.items():
+            if doc_id.startswith(writing_prefix):
+                try:
+                    # writing_chatId_timestamp 格式
+                    timestamp_str = doc_id.split('_')[-1]
+                    doc_timestamp = int(timestamp_str)
+                    if doc_timestamp > latest_timestamp:
+                        latest_timestamp = doc_timestamp
+                        latest_doc = doc
+                        latest_doc_id = doc_id
+                        print(f"找到更新的文档: {doc_id}, 时间戳: {doc_timestamp}")
+                except (ValueError, IndexError):
+                    continue
+        
+        # 如果找到文档，返回其处理后的内容
+        if latest_doc and latest_doc_id:
+            print(f"找到最新的写作文档: {latest_doc_id}")
+            
+            # 获取处理后的内容
+            processed_content = latest_doc.get("processed_content", "")
+            if not processed_content:
+                print(f"警告: 文档 {latest_doc_id} 没有处理后内容")
+                
+            return {"status": "success", "content": processed_content}
+        
+        # 如果没有找到与chat_id相关的文档，尝试查找任何写作文档
+        for doc_id, doc in sorted(document_storage.documents.items(), key=lambda x: x[0], reverse=True):
+            if "writing" in doc_id and doc.get("processed_content"):
+                print(f"找到写作文档: {doc_id}")
+                return {"status": "success", "content": doc.get("processed_content", "")}
+        
+        # 如果仍找不到，检查last_uploaded_document
+        if last_uploaded_document and "processed_content" in last_uploaded_document:
+            print("使用last_uploaded_document中的处理后内容")
+            return {"status": "success", "content": last_uploaded_document["processed_content"]}
+        
+        # 如果仍找不到，尝试查找任何有处理后内容的文档
+        for doc_id, doc in document_storage.documents.items():
+            if doc.get("processed_content"):
+                print(f"找到有处理后内容的文档: {doc_id}")
+                return {"status": "success", "content": doc.get("processed_content", "")}
+        
+        # 如果真的找不到任何内容，返回错误
+        print("未找到任何文档内容")
+        return {"status": "error", "message": "未找到与该聊天关联的处理后文档内容"}
+        
+    except Exception as e:
+        print(f"获取处理后文档内容时出错: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"获取处理后文档内容时出错: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -46,7 +46,7 @@
     >
     </Chat>
     
-    <a-modal
+    <Modal
       v-model:visible="previewModalVisible"
       title="文档预览"
       width="800px"
@@ -55,13 +55,13 @@
       <div class="document-preview">
         <pre>{{ fileStore.processedContent }}</pre>
       </div>
-    </a-modal>
+    </Modal>
   </div>
 </template>
 <script setup lang="ts">
 import { ref, watch, computed, nextTick, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
-import { message, Button as AButton, Tag as ATag, Modal as AModal, Alert as AAlert } from 'ant-design-vue'
+import { message, Button as AButton, Tag as ATag, Modal, Alert as AAlert } from 'ant-design-vue'
 import { useChatStore } from '@/stores/chat'
 import { useAuthStore } from '@/stores/auth'
 import { useFileStore } from '@/stores/file'
@@ -71,7 +71,7 @@ import type { Message } from '@/types/ChatType'
 // @ts-ignore - Ignore missing type declaration for openRouter
 import openRouterService from '@/api/openRouter'
 // 引入weChatbot服务
-import { sendChatRequest, downloadProcessedDocument } from '@/services/weChatbotService'
+import { sendChatRequest, downloadProcessedDocument, weChatbotService } from '@/services/weChatbotService'
 // 引入markdown解析
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -196,21 +196,56 @@ const downloadDocument = async () => {
     return
   }
   
-  if (!currentChatId.value || !fileStore.hasModifiedDoc) {
+  if (!currentChatId.value) {
     message.warning('没有可下载的文档')
     return
   }
   
+  // 检测是否有写作内容
+  const hasWritingContent = localStorage.getItem('has_writing_content') === 'true'
+  
+  // 如果既有处理后文档又有写作文档，询问用户要下载哪一个
+  if (fileStore.hasModifiedDoc && hasWritingContent) {
+    Modal.confirm({
+      title: '下载文档',
+      content: '请选择要下载的文档类型',
+      okText: '下载处理后文档',
+      cancelText: '下载写作文档',
+      onOk: () => {
+        downloadSelectedDocument('modified')
+      },
+      onCancel: () => {
+        downloadSelectedDocument('writing')
+      }
+    })
+  } else if (hasWritingContent) {
+    // 直接下载写作文档
+    downloadSelectedDocument('writing')
+  } else {
+    // 直接下载处理后文档
+    downloadSelectedDocument('modified')
+  }
+}
+
+// 下载指定类型的文档
+const downloadSelectedDocument = async (docType: 'modified' | 'writing') => {
   try {
     isDownloading.value = true
     // 获取文档内容
-    const blob = await downloadProcessedDocument(currentChatId.value)
+    const blob = await downloadProcessedDocument(currentChatId.value, docType)
     
     // 创建下载链接
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `processed_document_${currentChatId.value}.docx`
+    
+    // 生成文件名
+    const timestamp = new Date().toISOString().replace(/[-:.]/g, '')
+    const filename = docType === 'writing' ? 
+      `writing_document_${timestamp}.docx` : 
+      `processed_document_${currentChatId.value}.docx`
+    
+    a.download = filename
     document.body.appendChild(a)
     a.click()
     
@@ -218,10 +253,10 @@ const downloadDocument = async () => {
     URL.revokeObjectURL(url)
     document.body.removeChild(a)
     
-    message.success('文档下载成功')
+    message.success(`${docType === 'writing' ? '写作' : '处理后'}文档下载成功`)
   } catch (error) {
-    console.error('下载文档失败:', error)
-    message.error('下载文档失败')
+    console.error(`下载${docType === 'writing' ? '写作' : '处理后'}文档失败:`, error)
+    message.error(`下载${docType === 'writing' ? '写作' : '处理后'}文档失败`)
   } finally {
     isDownloading.value = false
   }
@@ -257,10 +292,21 @@ const sendMessage = async (msg: string) => {
     // 检查是否包含文档处理关键词
     const isDocProcessingCommand = /纠错|润色|总结|优化|分析/.test(msg)
     
-    // 如果是文档处理指令，设置处理状态为true
-    if (isDocProcessingCommand && fileStore.currentFile.id) {
+    // 检查是否包含写作关键词
+    const isWritingCommand = /写一篇|写一份|写作|撰写|起草|草拟/.test(msg) || 
+                            (msg.includes('写') && (
+                              msg.includes('文章') || 
+                              msg.includes('报告') || 
+                              msg.includes('公文') || 
+                              msg.includes('通知') || 
+                              msg.includes('申请') || 
+                              msg.includes('方案')
+                            ))
+    
+    // 如果是文档处理指令或写作指令，设置处理状态为true
+    if ((isDocProcessingCommand && fileStore.currentFile.id) || isWritingCommand) {
       fileStore.setProcessingStatus(true)
-      console.log('检测到文档处理指令，设置处理状态为true')
+      console.log('检测到文档处理或写作指令，设置处理状态为true')
     }
     
     // 如果没有当前聊天，创建一个新的
@@ -339,12 +385,12 @@ const sendMessage = async (msg: string) => {
           })
         }
         
-        // 如果是文档处理指令，在完成后设置处理状态为false
-        if (isDocProcessingCommand && fileStore.currentFile.id) {
+        // 如果是文档处理指令或写作指令，在完成后设置处理状态为false
+        if (isDocProcessingCommand && fileStore.currentFile.id || isWritingCommand) {
           // 延迟一点设置处理完成状态，保证文档完全处理完毕
           setTimeout(() => {
             fileStore.setProcessingStatus(false)
-            console.log('文档处理完成，设置处理状态为false，检查下载按钮状态：', 
+            console.log('文档处理或写作完成，设置处理状态为false，检查下载按钮状态：', 
               `hasModifiedDoc=${fileStore.hasModifiedDoc}, currentChatId=${currentChatId.value}`);
           }, 1000)
         }
@@ -377,9 +423,9 @@ const sendMessage = async (msg: string) => {
         })
         
         // 如果发生错误，也要重置处理状态
-        if (isDocProcessingCommand && fileStore.currentFile.id) {
+        if (isDocProcessingCommand && fileStore.currentFile.id || isWritingCommand) {
           fileStore.setProcessingStatus(false)
-          console.log('文档处理出错，重置处理状态为false')
+          console.log('文档处理或写作出错，重置处理状态为false')
         }
       }
     )
@@ -497,6 +543,124 @@ watch(
       const lastChat = chatStore.chatListData[0];
       console.log('尝试恢复聊天ID，使用最近的聊天:', lastChat.id);
       chatStore.setCurrentChat(lastChat);
+    }
+  }
+)
+
+// 监听聊天内容变化，当有AI回复时自动获取预览
+watch(
+  () => chatStore.currentChat.messages,
+  (newMessages, oldMessages) => {
+    // 如果有新消息，并且这是AI的回复（assistant角色）
+    if (newMessages && oldMessages && newMessages.length > oldMessages.length) {
+      const latestMessage = newMessages[newMessages.length - 1];
+      
+      // 如果是AI的回复，并且当前有聊天会话
+      if (latestMessage?.role === 'assistant' && chatStore.currentChat.id) {
+        const watchTime = new Date().toISOString();
+        console.log(`[${watchTime}] 检测到AI回复，检查是否包含文档处理或写作关键词`);
+        
+        // 检查消息内容是否有文档处理的关键词
+        const messageContent = latestMessage.content || '';
+        const hasProcessedKeywords = messageContent.includes('纠错') || 
+                                     messageContent.includes('已处理') || 
+                                     messageContent.includes('修改') || 
+                                     messageContent.includes('文档已') ||
+                                     messageContent.includes('处理完成') ||
+                                     messageContent.includes('文档处理') ||
+                                     messageContent.includes('调整');
+        
+        // 检查是否包含写作关键词
+        const hasWritingKeywords = messageContent.includes('已生成') ||
+                                    messageContent.includes('已写好') ||
+                                    messageContent.includes('已完成') ||
+                                    messageContent.includes('写作完成') ||
+                                    messageContent.includes('文稿') ||
+                                    messageContent.includes('撰写了');
+        
+        // 处理文档处理类消息
+        if (hasProcessedKeywords && fileStore.currentFile.id) {
+          console.log(`[${watchTime}] 检测到文档处理相关回复，尝试获取并显示处理后文档`);
+          
+          // 立即设置文档已修改状态
+          fileStore.setHasModifiedDoc(true);
+          localStorage.setItem('document_processed', 'true');
+          localStorage.setItem('last_processed_file_id', currentFileId.value);
+          localStorage.setItem('document_processed_timestamp', Date.now().toString());
+          
+          // 先检查是否已经有处理后内容
+          if (!fileStore.processedContent) {
+            // 尝试从weChatbotService中获取处理后的内容
+            console.log(`[${watchTime}] 尝试从API获取处理后文档内容`);
+            
+            // 获取最后一条消息内容
+            weChatbotService.getLastProcessedDocument(chatStore.currentChat.id)
+              .then(content => {
+                if (content && content.length > 0) {
+                  console.log(`[${watchTime}] 成功获取到处理后内容，长度: ${content.length}`);
+                  
+                  // 更新到fileStore
+                  fileStore.updateProcessedContent(content);
+                  
+                  // 手动触发文档更新事件
+                  const updateEvent = new CustomEvent('modifiedDocumentUpdated', {
+                    detail: {
+                      fileId: fileStore.currentFile.id,
+                      timestamp: Date.now()
+                    }
+                  });
+                  document.dispatchEvent(updateEvent);
+                }
+              })
+              .catch(err => {
+                console.error(`[${watchTime}] 获取处理后内容失败:`, err);
+              });
+          }
+          
+          // 手动触发文档处理完成事件
+          const event = new CustomEvent('documentProcessed', {
+            detail: {
+              fileId: fileStore.currentFile.id,
+              timestamp: Date.now()
+            }
+          });
+          document.dispatchEvent(event);
+        }
+        // 处理写作类消息
+        else if (hasWritingKeywords) {
+          console.log(`[${watchTime}] 检测到写作相关回复，尝试获取并显示写作内容`);
+          
+          // 设置写作内容存在标志
+          localStorage.setItem('has_writing_content', 'true');
+          localStorage.setItem('writing_timestamp', Date.now().toString());
+          
+          // 尝试从weChatbotService中获取处理后的内容
+          weChatbotService.getLastProcessedDocument(chatStore.currentChat.id)
+            .then(content => {
+              if (content && content.length > 0) {
+                console.log(`[${watchTime}] 成功获取到写作内容，长度: ${content.length}`);
+                
+                // 创建文本Blob
+                const textBlob = new Blob([content], { type: 'text/plain' });
+                
+                // 手动触发写作文档更新事件
+                const updateEvent = new CustomEvent('documentWritten', {
+                  detail: {
+                    blob: textBlob,
+                    content: content,
+                    contentType: 'writing',
+                    chatId: chatStore.currentChat.id,
+                    timestamp: Date.now()
+                  }
+                });
+                window.dispatchEvent(updateEvent);
+              }
+            })
+            .catch(err => {
+              console.error(`[${watchTime}] 获取写作内容失败:`, err);
+            });
+        }
+      }
     }
   }
 )

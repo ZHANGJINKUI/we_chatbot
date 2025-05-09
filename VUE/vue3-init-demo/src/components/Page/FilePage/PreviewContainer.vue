@@ -5,12 +5,12 @@
       <a-spin style="font-size: 28px; margin-right: 10px" />
       <span>正在加载...</span>
     </div>
-    <!-- 空状态 -->
-    <a-empty v-if="(!originalBlob && !modifiedBlob) && !loading" description="暂无预览" />
+    <!-- 空状态 - 仅当所有内容都不存在时显示 -->
+    <a-empty v-if="(!originalBlob && !modifiedBlob && !writingBlob) && !loading && !loadingPreview && !loadingModify && !loadingWriting" description="暂无预览" />
     
     <div class="preview-sections">
-      <!-- 原始文档 -->
-      <div class="preview-section" v-if="originalBlob || loading">
+      <!-- 原始文档 - 仅在有原始文档时显示 -->
+      <div class="preview-section" v-if="originalBlob || loadingPreview">
         <div class="section-header">原始文档</div>
         <div v-if="loadingPreview" class="loading-container">
           <a-spin tip="加载原始文档..." />
@@ -34,19 +34,20 @@
         </div>
       </div>
       
-      <!-- 处理后文档 -->
-      <div class="preview-section" v-if="modifiedBlob || loadingModify || converting || hasModified">
+      <!-- 处理后文档 - 同时用于显示处理后文档和写作文档内容 -->
+      <div class="preview-section" v-if="originalBlob && (modifiedBlob || loadingModify || converting || hasModified || hasWriting)">
         <div class="section-header">
           处理后文档
           <a-tag v-if="hasModified" color="green">已修改</a-tag>
+          <a-tag v-if="hasWriting && !hasModified" color="blue">AI写作</a-tag>
         </div>
-        <div v-if="loadingModify || converting" class="loading-container">
-          <a-spin :tip="converting ? '转换文档格式中...' : '加载处理后文档...'" />
+        <div v-if="loadingModify || loadingWriting || converting" class="loading-container">
+          <a-spin :tip="converting ? '转换文档格式中...' : (loadingWriting ? '生成写作内容中...' : '加载处理后文档...')" />
         </div>
         <div v-else-if="modifiedError" class="error-container">
-          <a-alert type="error" message="处理后文档加载失败" :description="modifiedError" />
+          <a-alert type="error" message="文档加载失败" :description="modifiedError" />
           <a-button 
-            v-if="modifiedBlob" 
+            v-if="modifiedBlob || writingBlob" 
             @click="retryRenderModified" 
             class="retry-button"
             type="primary"
@@ -78,10 +79,13 @@ defineOptions({
 const props = defineProps<{
   originalBlob: Blob | null
   modifiedBlob: Blob | null
+  writingBlob?: Blob | null
   loadingPreview: boolean
   loadingModify: boolean
+  loadingWriting?: boolean
   converting: boolean
   hasModified: boolean
+  hasWriting?: boolean
 }>()
 
 const originalDocContainer = ref<HTMLElement | null>(null)
@@ -212,42 +216,32 @@ const renderOriginalDocPreview = async () => {
 
 // 优化渲染后的文档内容
 const optimizeRenderedDocument = (container: HTMLElement) => {
+  if (!container) return;
+  
   try {
-    // 找到所有页面元素
-    const pages = container.querySelectorAll('.docx-page');
-    if (pages.length > 0) {
-      // 为每个页面设置适当的宽度
-      pages.forEach(page => {
-        // 移除可能导致内容截断的样式
-        (page as HTMLElement).style.overflow = 'visible';
-        (page as HTMLElement).style.height = 'auto';
-        
-        // 确保页面宽度适合容器
-        (page as HTMLElement).style.width = '100%';
-        (page as HTMLElement).style.maxWidth = '100%';
-      });
-    }
-    
-    // 处理表格以避免溢出
-    const tables = container.querySelectorAll('table');
-    if (tables.length > 0) {
-      tables.forEach(table => {
-        (table as HTMLElement).style.maxWidth = '100%';
-        (table as HTMLElement).style.width = 'auto';
-        (table as HTMLElement).style.tableLayout = 'auto';
-      });
-    }
-    
-    // 处理图片以适应容器
+    // 查找所有图片元素
     const images = container.querySelectorAll('img');
-    if (images.length > 0) {
-      images.forEach(img => {
-        (img as HTMLElement).style.maxWidth = '100%';
-        (img as HTMLElement).style.height = 'auto';
+    images.forEach(img => {
+      // 设置最大宽度以适应容器
+      img.style.maxWidth = '100%';
+    });
+    
+    // 处理表格样式
+    const tables = container.querySelectorAll('table');
+    tables.forEach(table => {
+      table.style.width = '100%';
+      table.style.borderCollapse = 'collapse';
+      
+      // 处理表格单元格
+      const cells = table.querySelectorAll('td, th');
+      cells.forEach(cell => {
+        // 确保单元格有边框
+        cell.style.border = '1px solid #ddd';
+        cell.style.padding = '8px';
       });
-    }
+    });
   } catch (error) {
-    console.error('优化渲染后文档失败:', error);
+    console.warn('优化文档渲染出错:', error);
   }
 }
 
@@ -410,29 +404,13 @@ const renderModifiedDocContent = async () => {
 }
 
 // 组件挂载后，如果已有blob数据则渲染
-onMounted(async () => {
-  console.log('PreviewContainer组件挂载');
-  
-  // 确保DOM已渲染
-  await nextTick();
-  
-  // 初始渲染
-  if (props.originalBlob) {
+onMounted(() => {
+  if (props.originalBlob && originalDocContainer.value) {
     renderOriginalDocPreview();
   }
   
-  if (props.modifiedBlob) {
-    console.log('组件挂载时检测到修改后文档数据，准备渲染');
+  if (props.modifiedBlob && modifiedDocContainer.value) {
     renderModifiedDocPreview();
-    
-    // 增加一个额外的延迟检查，确保即使前面的渲染失败也能再次尝试
-    setTimeout(() => {
-      if (modifiedError.value && props.modifiedBlob) {
-        console.log('检测到渲染错误，自动重新尝试渲染修改后文档');
-        modifiedError.value = null;
-        renderModifiedDocPreview();
-      }
-    }, 800);
   }
 });
 

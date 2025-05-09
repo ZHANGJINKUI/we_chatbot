@@ -53,9 +53,27 @@ const isDocumentRelatedQuery = (message: string): boolean => {
 /**
  * 识别用户消息的意图类型
  * @param message 用户消息
- * @returns string 意图类型："correction"(纠错)、"polish"(润色)、"summary"(总结)或"chat"(普通聊天)
+ * @returns string 意图类型："correction"(纠错)、"polish"(润色)、"summary"(总结)、"writing"(写作)或"chat"(普通聊天)
  */
 const getMessageIntent = (message: string): string => {
+  // 检查是否包含写作相关关键词
+  if (message.includes('写一篇') ||
+    message.includes('写一份') ||
+    message.includes('写作') ||
+    message.includes('撰写') ||
+    message.includes('起草') ||
+    message.includes('草拟') ||
+    (message.includes('写') && (
+      message.includes('文章') ||
+      message.includes('报告') ||
+      message.includes('公文') ||
+      message.includes('通知') ||
+      message.includes('申请') ||
+      message.includes('方案')
+    ))) {
+    return 'writing';
+  }
+
   // 检查是否包含润色相关关键词
   if (message.includes('润色') ||
     message.includes('优化') ||
@@ -246,7 +264,8 @@ export const sendChatRequest = async (
                 const event = new CustomEvent('documentProcessed', {
                   detail: {
                     fileId: fileStore.currentFile.id,
-                    timestamp: Date.now()
+                    timestamp: Date.now(),
+                    contentType: 'process' // 明确标记为处理类型
                   }
                 });
                 document.dispatchEvent(event);
@@ -259,14 +278,56 @@ export const sendChatRequest = async (
                   const updateEvent = new CustomEvent('modifiedDocumentUpdated', {
                     detail: {
                       blob: textBlob,
+                      content: parsedData.processed_document,
                       fileId: fileStore.currentFile.id,
-                      timestamp: Date.now()
+                      chatId: params.get('chat_id') || localStorage.getItem('chat_id'),
+                      timestamp: Date.now(),
+                      contentType: 'process' // 明确标记为处理类型
                     }
                   });
                   document.dispatchEvent(updateEvent);
                 } catch (e) {
                   console.error('创建文本Blob失败:', e);
                 }
+              }
+            }
+
+            // 处理写作内容
+            if (parsedData && parsedData.writing_content && messageIntent === 'writing') {
+              console.log('收到写作内容，长度:', parsedData.writing_content.length);
+
+              // 获取当前文件信息
+              const fileStore = useFileStore();
+              const currentFileId = fileStore.currentFile?.id;
+
+              // 检查是否已上传文档
+              if (!currentFileId) {
+                console.log('未上传文档，无法处理写作内容');
+                antMessage.warning('请先上传文档，再使用写作功能');
+                return;
+              }
+
+              // 创建文本Blob
+              try {
+                const textBlob = new Blob([parsedData.writing_content], { type: 'text/plain' });
+
+                // 触发修改后文档更新事件，将写作内容渲染到处理后文档区域
+                const updateEvent = new CustomEvent('modifiedDocumentUpdated', {
+                  detail: {
+                    blob: textBlob,
+                    content: parsedData.writing_content,
+                    contentType: 'writing', // 标记为写作类型，但会被渲染到处理后文档区域
+                    chatId: params.get('chat_id') || localStorage.getItem('chat_id'),
+                    fileId: currentFileId, // 添加文件ID
+                    timestamp: Date.now()
+                  }
+                });
+                document.dispatchEvent(updateEvent);
+
+                // 显示写作成功消息
+                antMessage.success('文档写作完成，正在生成预览...');
+              } catch (e) {
+                console.error('创建写作内容Blob失败:', e);
               }
             }
           } catch (error) {
@@ -292,7 +353,8 @@ export const sendChatRequest = async (
         const event = new CustomEvent('documentProcessed', {
           detail: {
             fileId: fileStore.currentFile?.id,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            contentType: 'process' // 明确标记为处理文档类型
           }
         });
         document.dispatchEvent(event);
@@ -352,24 +414,32 @@ export const healthCheck = async (): Promise<boolean> => {
 /**
  * 下载处理后的文档
  * @param chatId 聊天ID
- * @returns Promise<Blob> 文档Blob对象
+ * @param docType 文档类型：'modified'(修改后文档) 或 'writing'(写作文档)，默认为修改后文档
+ * @returns Promise<Blob> 文档blob对象
  */
-export const downloadProcessedDocument = async (chatId: string): Promise<Blob> => {
+export const downloadProcessedDocument = async (chatId: string, docType: 'modified' | 'writing' = 'modified'): Promise<Blob> => {
   try {
     // 添加下载进度提示
     antMessage.loading('正在准备下载文档...');
 
-    const response = await axiosInstance.get('/api/download-result', {
+    console.log(`开始下载${docType === 'writing' ? '写作' : '处理后'}文档，聊天ID:`, chatId);
+
+    // 添加docType参数表示下载类型
+    const response = await axiosInstance.get(`/api/download-result`, {
       responseType: 'blob',
-      params: { chatId },
+      params: { chatId, docType },
       timeout: 30000
     });
 
+    if (response.status !== 200) {
+      throw new Error(`下载失败: ${response.status}`);
+    }
+
     return response.data;
   } catch (error) {
-    console.error('下载文档失败:', error);
+    console.error(`下载${docType === 'writing' ? '写作' : '处理后'}文档失败:`, error);
     antMessage.error('下载文档失败，请重试');
-    throw error;
+    throw new Error(`下载失败: ${(error as Error).message}`);
   }
 };
 
@@ -458,7 +528,8 @@ export const requestDocumentPreview = async (
           detail: {
             fileId,
             chatId,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            contentType: 'process' // 明确标记为处理文档类型
           }
         });
         document.dispatchEvent(event);
@@ -481,32 +552,61 @@ export const requestDocumentPreview = async (
 /**
  * 获取最后一次处理的文档内容
  * @param chatId 聊天ID
+ * @param contentType 内容类型：'writing'(写作) 或 'process'(文档处理)
  * @returns Promise<string> 处理后的文档内容
  */
-export const getLastProcessedDocument = async (chatId: string): Promise<string> => {
+export const getLastProcessedDocument = async (chatId: string, contentType: string = 'process'): Promise<string> => {
   if (!chatId) {
     console.error('获取处理后文档内容失败: 聊天ID不能为空');
     return '';
   }
 
   const startTime = new Date().toISOString();
-  console.log(`[${startTime}] 获取最后处理的文档内容, chatId=${chatId}`);
+  console.log(`[${startTime}] 获取最后处理的文档内容, chatId=${chatId}, contentType=${contentType}`);
 
-  try {
-    // 调用API获取处理后的文档内容
-    const response = await axiosInstance.get(`/api/chat/processed-document?chat_id=${chatId}&timestamp=${Date.now()}`);
+  // 尝试3次，每次间隔1秒
+  let retryCount = 0;
+  const maxRetries = 3;
 
-    if (response.data && response.data.status === 'success' && response.data.content) {
-      console.log(`[${startTime}] 成功获取处理后文档内容，内容长度: ${response.data.content.length}`);
-      return response.data.content;
-    } else {
-      console.warn(`[${startTime}] 获取处理后文档内容失败: ${response.data?.message || '未知错误'}`);
-      return '';
+  while (retryCount < maxRetries) {
+    try {
+      // 注意这里使用chat_id作为参数名，与后端保持一致
+      const response = await axiosInstance.get('/api/chat/processed-document', {
+        params: {
+          chat_id: chatId,
+          content_type: contentType, // 添加内容类型参数
+          timestamp: Date.now()
+        },
+        timeout: 10000  // 增加超时时间
+      });
+
+      if (response.data && response.data.status === 'success' && response.data.content) {
+        console.log(`[${startTime}] 成功获取${contentType === 'writing' ? '写作' : '处理后'}文档内容，内容长度: ${response.data.content.length}`);
+        return response.data.content;
+      } else {
+        console.warn(`[${startTime}] 获取${contentType === 'writing' ? '写作' : '处理后'}文档内容失败: ${response.data?.message || '未知错误'}`);
+
+        // 如果失败但状态码是200，继续重试
+        retryCount++;
+        if (retryCount < maxRetries) {
+          console.log(`[${startTime}] 将在1秒后进行第${retryCount + 1}次重试`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+    } catch (error) {
+      console.error(`[${startTime}] 获取${contentType === 'writing' ? '写作' : '处理后'}文档内容出错:`, error);
+
+      // 如果是网络错误，继续重试
+      retryCount++;
+      if (retryCount < maxRetries) {
+        console.log(`[${startTime}] 网络错误，将在1秒后进行第${retryCount + 1}次重试`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
     }
-  } catch (error) {
-    console.error(`[${startTime}] 获取处理后文档内容出错:`, error);
-    return '';
   }
+
+  console.error(`[${startTime}] 获取${contentType === 'writing' ? '写作' : '处理后'}文档内容失败，已重试${maxRetries}次`);
+  return '';
 };
 
 /**
@@ -532,4 +632,15 @@ export const checkEndpointAvailability = async (endpoint: string): Promise<boole
     console.error(`API端点 ${endpoint} 检查失败:`, error.message);
     return false;
   }
+};
+
+// 创建weChatbotService对象导出所有服务函数
+export const weChatbotService = {
+  sendChatRequest,
+  healthCheck,
+  downloadProcessedDocument,
+  convertTextToDocx,
+  requestDocumentPreview,
+  getLastProcessedDocument,
+  checkEndpointAvailability
 }; 

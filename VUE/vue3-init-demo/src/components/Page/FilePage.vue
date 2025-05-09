@@ -33,7 +33,8 @@
 
       <!-- 内容区 -->
       <div class="scrollable-content">
-        <template v-if="file.id">
+        <!-- 有文件ID或有写作内容时显示PreviewContainer -->
+        <template v-if="file.id || hasWriting">
           <PreviewContainer
             :original-blob="originalBlob"
             :modified-blob="modifiedBlob"
@@ -41,12 +42,14 @@
             :loading-modify="loadingModify"
             :converting="converting"
             :has-modified="hasModifiedDoc"
+            :has-writing="hasWriting"
           />
         </template>
+        <!-- 既没有文件也没有写作内容时显示上传占位符 -->
         <template v-else>
           <div class="upload-placeholder">
             <upload-outlined style="font-size: 48px; margin-bottom: 16px" />
-            <p>请上传.docx文档以开始处理</p>
+            <p>请上传.docx文档以开始处理，或在对话框中输入写作指令</p>
           </div>
         </template>
       </div>
@@ -91,6 +94,8 @@ const loadingModify = ref<boolean>(false)
 const modifiedBlob = ref<Blob | null>(null)
 const converting = ref<boolean>(false)
 const loadingPreviewRequest = ref<boolean>(false)
+// 添加写作标志状态，但不需要单独的blob
+const hasWriting = ref<boolean>(false)
 
 // 初始化服务
 const mountTime = new Date().toISOString()
@@ -181,13 +186,8 @@ const processDocument = async (fileId?: string, chatId?: string, forced = false)
   const currentFileId = fileId || file.value?.id;
   const currentChatId = chatId || chat.value?.id;
   
-  if (!currentFileId) {
-    console.error(`[${startTime}] processDocument 错误: 文件ID不能为空`);
-    return false;
-  }
-  
-  if (!currentChatId) {
-    console.error(`[${startTime}] processDocument 错误: 聊天ID不能为空`);
+  if (!currentFileId && !currentChatId) {
+    console.error(`[${startTime}] processDocument 错误: 文件ID和聊天ID不能同时为空`);
     return false;
   }
   
@@ -197,7 +197,7 @@ const processDocument = async (fileId?: string, chatId?: string, forced = false)
   // 处理文档
   try {
     console.log(`[${startTime}] 开始通过WeChatbotService处理文档`);
-    const success = await weChatbotService.requestDocumentPreview(currentFileId, forced);
+    const success = await weChatbotService.requestDocumentPreview(currentFileId || '', forced);
     
     if (success) {
       console.log(`[${startTime}] 文档处理成功`);
@@ -223,13 +223,21 @@ const handleModifiedDocumentUpdated = (event: any) => {
   const eventTime = new Date().toISOString();
   console.log(`[${eventTime}] 收到修改后文档更新事件:`, event.detail);
   
-  const { blob, fileId, chatId } = event.detail;
+  const { blob, fileId, chatId, contentType } = event.detail;
   
   // 确保重置处理状态
   fileStore.setProcessingStatus(false);
   
-  // 验证数据
-  if (fileId && file.value && file.value.id === fileId) {
+  // 判断是写作内容还是修改内容
+  if (contentType === 'writing') {
+    console.log(`[${eventTime}] 接收到写作内容更新，重定向到写作文档处理函数`);
+    // 确保这里是调用handleWritingDocumentUpdated，不要修改modifiedBlob
+    handleWritingDocumentUpdated(event.detail);
+    return;
+  }
+  
+  // 验证数据 - 只处理非writing类型的内容
+  if (contentType !== 'writing' && fileId && file.value && file.value.id === fileId) {
     console.log(`[${eventTime}] 文件ID匹配，立即更新预览`);
     
     // 设置hasModifiedDoc状态
@@ -247,82 +255,156 @@ const handleModifiedDocumentUpdated = (event: any) => {
       
       // 使用nextTick确保DOM更新后再设置新的blob
       nextTick(async () => {
-        // 首先尝试从fileStore中获取处理后的内容
-        const processedContent = fileStore.processedContent;
-        
-        if (processedContent && processedContent.length > 0) {
-          console.log(`[${eventTime}] 使用存储的处理后内容作为预览，内容长度: ${processedContent.length}`);
-          
-          // 创建文本Blob
-          const textBlob = new Blob([processedContent], { type: 'text/plain' });
-          
-          // 设置用于预览的blob
-          modifiedBlob.value = textBlob;
-          
-          // 尝试转换为DOCX（更好的显示效果）
-          weChatbotService.convertTextToDocx(
-            processedContent,
-            `processed_document_${fileId}.docx`
-          ).then(docxBlob => {
-            console.log(`[${eventTime}] 成功转换为DOCX，更新显示`);
-            modifiedBlob.value = docxBlob;
-          }).catch(err => {
-            console.error(`[${eventTime}] 转换DOCX失败，保持文本显示:`, err);
-          }).finally(() => {
-            loadingModify.value = false;
-          });
-        } else if (blob && blob instanceof Blob) {
-          // 如果没有处理后内容但有blob，则使用事件中的blob
-          console.log(`[${eventTime}] 文档更新事件包含有效Blob数据: size=${blob.size}, type=${blob.type}`);
-          modifiedBlob.value = blob;
-          loadingModify.value = false;
-        } else {
-          // 如果都没有，尝试通过API获取
-          console.log(`[${eventTime}] 没有获取到内容，尝试从API获取`);
-          try {
-            // 尝试获取处理后的内容
-            const content = await fileStore.getProcessedContent(fileId);
-            if (content && content.length > 0) {
-              console.log(`[${eventTime}] 成功从API获取处理后内容，长度: ${content.length}`);
+        try {
+          // 如果事件中直接包含了Blob对象
+          if (blob instanceof Blob) {
+            modifiedBlob.value = blob;
+            console.log(`[${eventTime}] 直接使用事件中的Blob渲染修改后文档`);
+          } else if (event.detail.content) {
+            // 如果有文本内容，转换为docx
+            console.log(`[${eventTime}] 开始将文本内容转换为docx文件`);
+            
+            // 先创建文本blob，保证至少有内容显示
+            const textBlob = new Blob([event.detail.content], { type: 'text/plain' });
+            modifiedBlob.value = textBlob;
+            
+            // 尝试转换为docx
+            try {
+              const docBlob = await weChatbotService.convertTextToDocx(
+                event.detail.content, 
+                `processed_document_${fileId}.docx`
+              );
+              modifiedBlob.value = docBlob;
+              console.log(`[${eventTime}] 文本转换为docx完成`);
+            } catch (err) {
+              console.error(`[${eventTime}] 转换docx失败，保持文本显示:`, err);
+            }
+          } else if (chatId) {
+            // 如果只有chatId，尝试获取该对话的处理文档
+            // 明确指定获取 'process' 类型的文档，而不是 'writing' 类型
+            console.log(`[${eventTime}] 尝试通过chatId获取处理后文档内容`);
+            const content = await weChatbotService.getLastProcessedDocument(chatId, 'process');
+            
+            if (content) {
+              console.log(`[${eventTime}] 成功获取处理后内容，长度: ${content.length}`);
               
-              // 创建文本Blob
+              // 先创建文本blob，保证至少有内容显示
               const textBlob = new Blob([content], { type: 'text/plain' });
-              
-              // 设置用于预览的blob
               modifiedBlob.value = textBlob;
               
-              // 尝试转换为DOCX
-              weChatbotService.convertTextToDocx(
-                content,
-                `processed_document_${fileId}.docx`
-              ).then(docxBlob => {
-                modifiedBlob.value = docxBlob;
-              }).catch(err => {
-                console.error(`[${eventTime}] 转换DOCX失败:`, err);
-              });
+              // 尝试转换为docx
+              try {
+                const docBlob = await weChatbotService.convertTextToDocx(
+                  content, 
+                  `processed_document_${fileId}.docx`
+                );
+                modifiedBlob.value = docBlob;
+                console.log(`[${eventTime}] 处理后内容转换为docx完成`);
+              } catch (err) {
+                console.error(`[${eventTime}] 转换docx失败，保持文本显示:`, err);
+              }
             } else {
-              console.warn(`[${eventTime}] 无法获取处理后内容`);
-              message.warning('无法获取处理后文档内容');
+              console.warn(`[${eventTime}] 无法通过chatId获取有效的处理后内容`);
+              message.warning('无法获取处理后内容');
             }
-          } catch (error) {
-            console.error(`[${eventTime}] 获取处理后内容失败:`, error);
-            message.error('获取处理后文档内容失败');
-          } finally {
-            loadingModify.value = false;
+          } else {
+            console.warn(`[${eventTime}] 没有提供有效的处理后文档数据`);
+            message.warning('没有提供有效的处理后文档数据');
           }
+        } catch (error) {
+          console.error(`[${eventTime}] 处理修改后文档数据出错:`, error);
+          message.error('处理修改后文档时出错');
+        } finally {
+          loadingModify.value = false;
         }
       });
     } catch (error) {
-      console.error(`[${eventTime}] 预览更新失败:`, error);
+      console.error(`[${eventTime}] 处理修改后文档更新出错:`, error);
       loadingModify.value = false;
-      message.error('文档预览加载失败，请刷新页面重试');
     }
-  } else {
-    console.log(`[${eventTime}] 文件ID不匹配，忽略更新: 当前=${file.value?.id}, 事件=${fileId}`);
+  } else if (contentType !== 'writing') {
+    console.warn(`[${eventTime}] 文件ID不匹配或未提供，忽略文档更新事件`);
+  }
+};
+
+// 处理写作文档更新
+const handleWritingDocumentUpdated = (detail: any) => {
+  const eventTime = new Date().toISOString();
+  console.log(`[${eventTime}] 处理写作文档更新:`, detail);
+  
+  const { blob, chatId, content, contentType } = detail;
+  
+  // 确保重置处理状态
+  fileStore.setProcessingStatus(false);
+  
+  // 检查是否明确指定为非写作内容
+  if (contentType && contentType !== 'writing') {
+    console.log(`[${eventTime}] 收到的不是写作内容（类型: ${contentType}），不进行写作文档更新`);
+    return;
   }
   
-  // 确保更新状态
-  fileStore.setProcessingStatus(false);
+  // 设置hasWriting状态
+  hasWriting.value = true;
+  localStorage.setItem('document_written', 'true');
+  localStorage.setItem('document_written_timestamp', Date.now().toString());
+  
+  // 设置加载状态
+  loadingWriting.value = true;
+  
+  try {
+    // 清除旧的blob数据，强制重新渲染
+    writingBlob.value = null;
+    
+    // 使用nextTick确保DOM更新后再设置新的blob
+    nextTick(async () => {
+      try {
+        if (blob instanceof Blob) {
+          // 如果事件中直接包含了Blob对象
+          writingBlob.value = blob;
+          console.log(`[${eventTime}] 直接使用事件中的Blob渲染写作文档`);
+        } else if (content) {
+          // 如果有文本内容，转换为docx
+          console.log(`[${eventTime}] 开始将文本内容转换为docx文件`);
+          // 使用文本内容创建文档
+          const docBlob = await weChatbotService.convertTextToDocx(
+            content, 
+            `AI写作_${new Date().toISOString()}.docx`
+          );
+          writingBlob.value = docBlob;
+          console.log(`[${eventTime}] 文本转换为docx完成`);
+        } else if (chatId) {
+          // 如果只有chatId，尝试获取该对话的处理文档
+          console.log(`[${eventTime}] 尝试通过chatId获取写作文档内容`);
+          // 明确指定获取'writing'类型的内容
+          const content = await weChatbotService.getLastProcessedDocument(chatId, 'writing');
+          
+          if (content) {
+            console.log(`[${eventTime}] 成功获取写作内容，长度: ${content.length}`);
+            const docBlob = await weChatbotService.convertTextToDocx(
+              content, 
+              `AI写作_${new Date().toISOString()}.docx`
+            );
+            writingBlob.value = docBlob;
+            console.log(`[${eventTime}] 通过chatId获取写作内容并转换完成`);
+          } else {
+            console.warn(`[${eventTime}] 无法通过chatId获取有效的写作内容`);
+            message.warning('无法获取写作内容');
+          }
+        } else {
+          console.warn(`[${eventTime}] 没有提供有效的写作数据`);
+          message.warning('没有提供有效的写作数据');
+        }
+      } catch (error) {
+        console.error(`[${eventTime}] 处理写作文档数据出错:`, error);
+        message.error('处理写作文档时出错');
+      } finally {
+        loadingWriting.value = false;
+      }
+    });
+  } catch (error) {
+    console.error(`[${eventTime}] 处理写作文档更新出错:`, error);
+    loadingWriting.value = false;
+  }
 };
 
 // 处理文档预览错误事件
@@ -346,10 +428,16 @@ const handleDocumentProcessed = async (event: any) => {
   const eventTime = new Date().toISOString();
   console.log(`[${eventTime}] 收到文档处理完成事件:`, event.detail);
   
-  const { fileId, timestamp } = event.detail;
+  const { fileId, timestamp, contentType } = event.detail;
   
   // 确保重置处理状态
   fileStore.setProcessingStatus(false);
+  
+  // 检查是否是处理文档类型，不是则返回
+  if (contentType !== 'process') {
+    console.log(`[${eventTime}] 收到的不是处理文档事件（类型: ${contentType}），不进行处理`);
+    return;
+  }
   
   // 更新状态
   if (fileId && fileId === file.value?.id) {
@@ -526,8 +614,18 @@ const beforeUpload = async (file: File): Promise<boolean> => {
       username: authStore.currentUser?.username || ''
     })
     
-    // 自动加载预览
+    // 自动加载原始文档预览
     await fetchOriginalPreview(fileItem.id)
+    
+    // 清空处理后文档
+    modifiedBlob.value = null
+    fileStore.setHasModifiedDoc(false)
+    localStorage.setItem('document_processed', 'false')
+    localStorage.removeItem('last_processed_file_id')
+
+    // 注意：不清空写作文档，因为写作文档与当前文件无关
+    console.log('文件上传成功，保留现有写作文档状态')
+
   } catch (error) {
     console.error('上传文件失败:', error)
     message.error(`上传文件失败: ${error instanceof Error ? error.message : '未知错误'}`)
@@ -608,6 +706,9 @@ watch(
           // 更新本地存储
           localStorage.setItem('document_processed', 'false');
           localStorage.removeItem('last_processed_file_id');
+          
+          // 写作文档状态不变
+          console.log(`[${startTime}] 文件切换成功，保留现有写作文档状态`);
         } else {
           // 如果document/switch API失败，尝试使用原来的方法
           await fetchOriginalPreview(newFileId);
@@ -617,6 +718,9 @@ watch(
           
           // 重置处理后文档状态标记
           fileStore.setHasModifiedDoc(false);
+          
+          // 写作文档状态不变
+          console.log(`[${startTime}] 文件切换成功（备用方法），保留现有写作文档状态`);
         }
       } catch (error) {
         console.error(`[${startTime}] 切换文件出错:`, error);
@@ -629,18 +733,90 @@ watch(
         
         // 重置处理后文档状态标记
         fileStore.setHasModifiedDoc(false);
+        
+        // 写作文档状态不变
+        console.log(`[${startTime}] 文件切换出错，但已尝试预览，保留现有写作文档状态`);
       } finally {
         loadingPreview.value = false;
       }
     } else {
-      // 重置状态
+      // 重置状态，但保留写作文档状态
       originalBlob.value = null;
       modifiedBlob.value = null;
       fileStore.setHasModifiedDoc(false);
+      console.log('文件ID为空，清空原始文档和处理后文档，保留写作文档状态');
     }
   },
   { immediate: true }
 )
+
+// 获取写作文档内容
+const fetchWritingContent = async (chatId: string) => {
+  if (!chatId) {
+    console.warn('获取写作内容失败：聊天ID不能为空');
+    return;
+  }
+
+  // 检查是否已经上传了文档
+  if (!file.value?.id) {
+    console.log('未上传文档，无法获取和显示写作内容');
+    message.warning('请先上传文档，再使用写作功能');
+    return;
+  }
+
+  const fetchTime = new Date().toISOString();
+  console.log(`[${fetchTime}] 开始获取写作内容，chatId=${chatId}`);
+  loadingModify.value = true;
+
+  try {
+    // 明确请求写作类型内容
+    const content = await weChatbotService.getLastProcessedDocument(chatId, 'writing');
+    
+    if (content && content.length > 0) {
+      console.log(`[${fetchTime}] 成功获取到写作内容，长度: ${content.length}`);
+      
+      // 设置写作标志
+      hasWriting.value = true;
+      fileStore.setHasModifiedDoc(true);
+      
+      // 更新本地存储
+      localStorage.setItem('document_written', 'true');
+      localStorage.setItem('document_written_timestamp', Date.now().toString());
+      localStorage.setItem('document_processed', 'true');
+      localStorage.setItem('last_processed_file_id', file.value.id);
+      
+      // 清空旧的修改后内容
+      modifiedBlob.value = null;
+      
+      // 先创建文本blob，保证至少有内容显示
+      const textBlob = new Blob([content], { type: 'text/plain' });
+      await nextTick();
+      
+      // 尝试转换为docx
+      try {
+        const docBlob = await weChatbotService.convertTextToDocx(
+          content, 
+          `AI写作_${new Date().toISOString()}.docx`
+        );
+        modifiedBlob.value = docBlob;
+        console.log(`[${fetchTime}] 写作内容成功转换为docx`);
+      } catch (err) {
+        console.error(`[${fetchTime}] 转换docx失败，使用文本显示:`, err);
+        modifiedBlob.value = textBlob;
+      }
+      
+      message.success('成功获取写作内容');
+    } else {
+      console.warn(`[${fetchTime}] 没有获取到写作内容`);
+      message.warning('未找到写作内容');
+    }
+  } catch (error) {
+    console.error(`[${fetchTime}] 获取写作内容失败:`, error);
+    message.error('获取写作内容失败');
+  } finally {
+    loadingModify.value = false;
+  }
+};
 
 // 监听聊天内容变化，当有AI回复时自动获取预览
 watch(
@@ -650,81 +826,138 @@ watch(
     if (newMessages && oldMessages && newMessages.length > oldMessages.length) {
       const latestMessage = newMessages[newMessages.length - 1];
       
-      // 如果是AI的回复，并且当前有文件和聊天会话
-      if (latestMessage?.role === 'assistant' && file.value?.id && chat.value?.id) {
+      // 如果是AI的回复
+      if (latestMessage?.role === 'assistant') {
         const watchTime = new Date().toISOString();
-        console.log(`[${watchTime}] 检测到AI回复，检查是否包含文档处理关键词`);
+        console.log(`[${watchTime}] 检测到AI回复，检查是否包含文档处理或写作关键词`);
         
-        // 检查消息内容是否有文档处理的关键词
+        // 消息内容
         const messageContent = latestMessage.content || '';
-        const hasProcessedKeywords = messageContent.includes('纠错') || 
-                                     messageContent.includes('已处理') || 
-                                     messageContent.includes('修改') || 
-                                     messageContent.includes('文档已') ||
-                                     messageContent.includes('处理完成') ||
-                                     messageContent.includes('文档处理') ||
-                                     messageContent.includes('调整');
         
-        if (hasProcessedKeywords) {
-          console.log(`[${watchTime}] 检测到文档处理相关回复，尝试获取并显示处理后文档`);
+        // 检查消息内容是否有写作的关键词 - 写作关键词比处理关键词优先级高
+        const hasWritingKeywords = messageContent.includes('写作') || 
+                                  messageContent.includes('写一篇') || 
+                                  messageContent.includes('范文') || 
+                                  messageContent.includes('已生成文章') ||
+                                  messageContent.includes('生成了一篇') ||
+                                  messageContent.includes('撰写') ||
+                                  (messageContent.includes('文章') && messageContent.includes('已完成')) ||
+                                  (messageContent.includes('已为您') && messageContent.includes('撰写'));
+        
+        // 如果有写作关键词，优先处理为写作内容
+        if (hasWritingKeywords && chat.value?.id) {
+          console.log(`[${watchTime}] 检测到写作相关回复，尝试获取写作内容`);
           
-          // 立即设置文档已修改状态
-          fileStore.setHasModifiedDoc(true);
-          localStorage.setItem('document_processed', 'true');
-          localStorage.setItem('last_processed_file_id', currentFileId.value);
-          localStorage.setItem('document_processed_timestamp', Date.now().toString());
-          
-          // 先检查是否已经有处理后内容
-          if (!fileStore.processedContent) {
-            // 尝试从weChatbotService中获取处理后的内容
-            console.log(`[${watchTime}] 尝试从API获取处理后文档内容`);
-            
-            // 获取最后一条消息内容
-            weChatbotService.getLastProcessedDocument(chat.value.id)
-              .then(content => {
-                if (content && content.length > 0) {
-                  console.log(`[${watchTime}] 成功获取到处理后内容，长度: ${content.length}`);
-                  
-                  // 更新到fileStore
-                  fileStore.updateProcessedContent(content);
-                  
-                  // 手动触发文档更新事件
-                  const updateEvent = new CustomEvent('modifiedDocumentUpdated', {
-                    detail: {
-                      fileId: file.value.id,
-                      timestamp: Date.now()
-                    }
-                  });
-                  document.dispatchEvent(updateEvent);
-                }
-              })
-              .catch(err => {
-                console.error(`[${watchTime}] 获取处理后内容失败:`, err);
-              });
+          // 检查是否已经上传了文档
+          if (!file.value?.id) {
+            console.log(`[${watchTime}] 未上传文档，无法显示写作内容`);
+            message.warning('请先上传文档，再使用写作功能');
+            return;
           }
           
-          // 手动触发文档处理完成事件
-          const event = new CustomEvent('documentProcessed', {
-            detail: {
-              fileId: file.value.id,
-              timestamp: Date.now()
-            }
+          // 设置处理文档标志
+          hasWriting.value = true;
+          fileStore.setHasModifiedDoc(true);
+          
+          // 保存状态到localStorage
+          localStorage.setItem('document_written', 'true');
+          localStorage.setItem('document_written_timestamp', Date.now().toString());
+          localStorage.setItem('document_processed', 'true');
+          localStorage.setItem('last_processed_file_id', file.value.id);
+          
+          // 使用专门函数获取写作内容
+          fetchWritingContent(chat.value.id).then(() => {
+            // 触发写作内容更新事件
+            const writingEvent = new CustomEvent('documentWritten', {
+              detail: {
+                chatId: chat.value.id,
+                timestamp: Date.now(),
+                contentType: 'writing',
+                fileId: file.value.id
+              }
+            });
+            window.dispatchEvent(writingEvent);
           });
-          document.dispatchEvent(event);
+          
+          return; // 如果是写作内容，不再继续处理文档修改相关逻辑
         }
         
-        // 使用一系列的延迟获取，提高成功率
-        const delayIntervals = [500, 1500, 3000, 5000];
-        
-        delayIntervals.forEach((delay, index) => {
-          setTimeout(() => {
-            if (!modifiedBlob.value) {
-              console.log(`[${watchTime}] 延迟(${delay}ms)自动获取预览 #${index + 1}`);
-              // 直接获取处理后的预览
-              fetchModifiedPreview(file.value.id);
+        // 如果有文件ID，检查是否有文档处理关键词
+        if (file.value?.id && chat.value?.id) {
+          // 检查消息内容是否有文档处理的关键词
+          const hasProcessedKeywords = messageContent.includes('纠错') || 
+                                      messageContent.includes('已处理') || 
+                                      messageContent.includes('修改') || 
+                                      messageContent.includes('文档已') ||
+                                      messageContent.includes('处理完成') ||
+                                      messageContent.includes('文档处理') ||
+                                      messageContent.includes('润色') ||
+                                      messageContent.includes('总结') ||
+                                      messageContent.includes('调整');
+          
+          if (hasProcessedKeywords) {
+            console.log(`[${watchTime}] 检测到文档处理相关回复，尝试获取并显示处理后文档`);
+            
+            // 立即设置文档已修改状态
+            fileStore.setHasModifiedDoc(true);
+            localStorage.setItem('document_processed', 'true');
+            localStorage.setItem('last_processed_file_id', currentFileId.value);
+            localStorage.setItem('document_processed_timestamp', Date.now().toString());
+            
+            // 先检查是否已经有处理后内容
+            if (!fileStore.processedContent) {
+              // 尝试从weChatbotService中获取处理后的内容
+              console.log(`[${watchTime}] 尝试从API获取处理后文档内容`);
+              
+              // 获取最后一条消息内容 - 明确指定为处理类型
+              weChatbotService.getLastProcessedDocument(chat.value.id, 'process')
+                .then(content => {
+                  if (content && content.length > 0) {
+                    console.log(`[${watchTime}] 成功获取到处理后内容，长度: ${content.length}`);
+                    
+                    // 更新到fileStore
+                    fileStore.updateProcessedContent(content);
+                    
+                    // 手动触发文档更新事件
+                    const updateEvent = new CustomEvent('modifiedDocumentUpdated', {
+                      detail: {
+                        fileId: file.value.id,
+                        timestamp: Date.now(),
+                        contentType: 'process'
+                      }
+                    });
+                    document.dispatchEvent(updateEvent);
+                  }
+                })
+                .catch(err => {
+                  console.error(`[${watchTime}] 获取处理后内容失败:`, err);
+                });
             }
-          }, delay);
-        });
+            
+            // 手动触发文档处理完成事件
+            const processEvent = new CustomEvent('documentProcessed', {
+              detail: {
+                fileId: file.value.id,
+                timestamp: Date.now(),
+                contentType: 'process'
+              }
+            });
+            document.dispatchEvent(processEvent);
+            
+            // 使用一系列的延迟获取，提高成功率
+            const delayIntervals = [500, 1500, 3000, 5000];
+            
+            delayIntervals.forEach((delay, index) => {
+              setTimeout(() => {
+                if (!modifiedBlob.value) {
+                  console.log(`[${watchTime}] 延迟(${delay}ms)自动获取预览 #${index + 1}`);
+                  // 直接获取处理后的预览
+                  fetchModifiedPreview(file.value.id);
+                }
+              }, delay);
+            });
+          }
+        }
       }
     }
   }
@@ -732,6 +965,7 @@ watch(
 
 // 组件挂载和卸载
 onMounted(() => {
+  const mountTime = new Date().toISOString();
   console.log(`[${mountTime}] FilePage组件挂载`);
   
   // 添加事件监听器
@@ -740,6 +974,8 @@ onMounted(() => {
   document.addEventListener('documentProcessed', handleDocumentProcessed);
   document.addEventListener('documentPreviewReady', handleDocumentPreviewReady);
   document.addEventListener('file-changed', handleFileChanged);
+  // 添加监听写作文档更新的事件
+  window.addEventListener('documentWritten', handleDocumentWritten);
   
   // 挂载时检查是否有已处理的文档需要显示
   if (file.value?.id) {
@@ -755,6 +991,52 @@ onMounted(() => {
       }, 300);
     }
   }
+
+  // 检查是否有写作文档状态需要恢复
+  const hasWritingDocument = localStorage.getItem('document_written') === 'true';
+  if (hasWritingDocument && file.value?.id) {
+    console.log(`[${mountTime}] 检测到有写作文档，恢复写作状态...`);
+    hasWriting.value = true;
+    fileStore.setHasModifiedDoc(true);
+
+    // 尝试从chatStore获取最后的写作内容
+    if (chat.value?.id) {
+      setTimeout(async () => {
+        try {
+          const writingContent = await weChatbotService.getLastProcessedDocument(chat.value.id, 'writing');
+          if (writingContent && writingContent.length > 0) {
+            console.log(`[${mountTime}] 成功恢复写作内容，长度: ${writingContent.length}`);
+            
+            // 尝试转换为docx显示
+            loadingModify.value = true;
+            try {
+              const docBlob = await weChatbotService.convertTextToDocx(
+                writingContent, 
+                `AI写作_恢复.docx`
+              );
+              modifiedBlob.value = docBlob;
+            } catch (err) {
+              console.error(`[${mountTime}] 转换写作内容为docx失败:`, err);
+              // 使用文本blob作为备选
+              modifiedBlob.value = new Blob([writingContent], { type: 'text/plain' });
+            } finally {
+              loadingModify.value = false;
+            }
+          }
+        } catch (error) {
+          console.error(`[${mountTime}] 恢复写作内容失败:`, error);
+          hasWriting.value = false;
+          fileStore.setHasModifiedDoc(false);
+        }
+      }, 500);
+    }
+  } else if (hasWritingDocument && !file.value?.id) {
+    console.log(`[${mountTime}] 检测到有写作文档，但未上传文档，不恢复写作状态`);
+    // 取消写作状态
+    hasWriting.value = false;
+    localStorage.removeItem('document_written');
+    localStorage.removeItem('document_written_timestamp');
+  }
 });
 
 onUnmounted(() => {
@@ -767,6 +1049,8 @@ onUnmounted(() => {
   document.removeEventListener('documentProcessed', handleDocumentProcessed);
   document.removeEventListener('documentPreviewReady', handleDocumentPreviewReady);
   document.removeEventListener('file-changed', handleFileChanged);
+  // 清理事件监听
+  window.removeEventListener('documentWritten', handleDocumentWritten);
 });
 
 // 处理文件切换事件
@@ -797,11 +1081,123 @@ const handleFileChanged = async (event: CustomEvent) => {
     
     // 获取原始文档预览
     await fetchOriginalPreview(fileId);
+    
+    // 写作文档状态不变
+    console.log(`[${eventTime}] 文件切换事件处理完成，保留现有写作文档状态`);
+    
   } catch (error) {
     console.error(`[${eventTime}] 处理文件切换事件出错:`, error);
     message.error('切换文件失败，请重试');
   } finally {
     loadingPreview.value = false;
+  }
+};
+
+// 处理写作文档更新事件
+const handleDocumentWritten = (event: CustomEvent) => {
+  console.log('[FilePage] 收到写作文档更新事件:', event.detail);
+  
+  // 检查是否已经上传了文档
+  if (!file.value?.id) {
+    console.log('[FilePage] 未上传文档，无法显示写作内容');
+    message.warning('请先上传文档，再使用写作功能');
+    return;
+  }
+  
+  // 设置正在加载写作内容状态
+  loadingModify.value = true;
+  
+  // 获取写作文档内容
+  const writingContent = event.detail.content;
+  const blob = event.detail.blob;
+  const contentType = event.detail.contentType || 'writing';
+  const chatId = event.detail.chatId;
+  
+  // 检查是否是写作内容
+  if (contentType !== 'writing') {
+    console.log(`[FilePage] 收到的不是写作内容（类型: ${contentType}），不进行处理`);
+    loadingModify.value = false;
+    return;
+  }
+  
+  try {
+    // 清除旧的处理后内容
+    modifiedBlob.value = null;
+    
+    // 设置写作标志和处理后文档标志
+    hasWriting.value = true;
+    fileStore.setHasModifiedDoc(true);
+    
+    // 保存写作状态到localStorage
+    localStorage.setItem('document_written', 'true');
+    localStorage.setItem('document_written_timestamp', Date.now().toString());
+    localStorage.setItem('document_processed', 'true');
+    // 记录与哪个文档关联
+    localStorage.setItem('last_processed_file_id', file.value.id);
+    
+    // 使用nextTick确保DOM更新后再设置新的blob
+    nextTick(async () => {
+      try {
+        if (blob instanceof Blob) {
+          // 直接使用提供的Blob
+          console.log('[FilePage] 使用事件提供的Blob作为写作内容, 大小:', blob.size);
+          modifiedBlob.value = blob;
+        } else if (writingContent) {
+          // 将文本内容转换为Blob
+          console.log('[FilePage] 从文本内容创建Blob作为写作内容, 长度:', writingContent.length);
+          
+          // 尝试转换为docx显示
+          try {
+            const docBlob = await weChatbotService.convertTextToDocx(
+              writingContent, 
+              `AI写作_${new Date().toISOString()}.docx`
+            );
+            modifiedBlob.value = docBlob;
+            console.log('[FilePage] 成功转换为docx文档');
+          } catch (err) {
+            console.error('[FilePage] 转换为docx失败，使用文本blob:', err);
+            modifiedBlob.value = new Blob([writingContent], { type: 'text/plain' });
+          }
+        } else if (chatId) {
+          // 如果有chatId，尝试获取该对话的写作内容
+          console.log('[FilePage] 尝试通过chatId获取写作内容');
+          // 明确指定获取'writing'类型的内容
+          const content = await weChatbotService.getLastProcessedDocument(chatId, 'writing');
+          
+          if (content && content.length > 0) {
+            console.log(`[FilePage] 成功获取写作内容，长度: ${content.length}`);
+            try {
+              const docBlob = await weChatbotService.convertTextToDocx(
+                content, 
+                `AI写作_${new Date().toISOString()}.docx`
+              );
+              modifiedBlob.value = docBlob;
+            } catch (err) {
+              console.error('[FilePage] 转换为docx失败，使用文本blob:', err);
+              modifiedBlob.value = new Blob([content], { type: 'text/plain' });
+            }
+          } else {
+            console.warn('[FilePage] 无法获取写作内容');
+            message.warning('无法获取写作内容');
+          }
+        } else {
+          console.warn('[FilePage] 没有提供有效的写作数据');
+          message.warning('没有提供有效的写作数据');
+        }
+        
+        // 成功消息
+        message.success('写作内容已生成');
+      } catch (error) {
+        console.error('[FilePage] 处理写作文档更新出错:', error);
+        message.error('处理写作内容时出错');
+      } finally {
+        loadingModify.value = false;
+      }
+    });
+  } catch (error) {
+    console.error('[FilePage] 处理写作文档更新出错:', error);
+    loadingModify.value = false;
+    message.error('处理写作内容时出错');
   }
 };
 
@@ -895,7 +1291,6 @@ const fetchModifiedPreview = async (fileId: string) => {
       localStorage.setItem('document_processed_timestamp', Date.now().toString());
       
       message.success('处理后文档预览加载成功');
-      return;
     }
     
     // 如果上述方法都失败，使用document API获取处理后文档内容
@@ -943,6 +1338,43 @@ const fetchModifiedPreview = async (fileId: string) => {
     loadingModify.value = false;
   }
 };
+
+// 重置所有文档状态
+const resetAllDocumentStates = () => {
+  console.log('重置所有文档状态');
+  
+  // 清空原始文档
+  originalBlob.value = null;
+  
+  // 清空处理后文档
+  modifiedBlob.value = null;
+  fileStore.setHasModifiedDoc(false);
+  localStorage.setItem('document_processed', 'false');
+  localStorage.removeItem('last_processed_file_id');
+  
+  // 清空写作文档
+  writingBlob.value = null;
+  hasWriting.value = false;
+  localStorage.removeItem('document_written');
+  localStorage.removeItem('document_written_timestamp');
+};
+
+// 仅重置写作文档状态
+const resetWritingDocumentState = () => {
+  console.log('重置写作文档状态');
+  
+  // 清空写作文档
+  writingBlob.value = null;
+  hasWriting.value = false;
+  localStorage.removeItem('document_written');
+  localStorage.removeItem('document_written_timestamp');
+};
+
+// 创建新聊天时重置写作内容
+window.addEventListener('resetChat', () => {
+  console.log('收到聊天重置事件，清空写作内容');
+  resetWritingDocumentState();
+});
 </script>
 <style lang="less" scoped>
 .page-container {

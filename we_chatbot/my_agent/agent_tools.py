@@ -229,6 +229,112 @@ def csc(text):
         logger.error(f"CSC纠错过程中出错: {str(e)}")
         return {"status": "error", "message": str(e)}
 
+# 添加写作工具函数
+def writing(text):
+    """
+    使用MCP协议调用写作工具生成公文
+    
+    Args:
+        text (str): 写作指令
+        
+    Returns:
+        dict: 写作结果，包含生成的公文内容和回复消息
+    """
+    try:
+        # 详细日志
+        logger.info(f"开始处理写作请求: '{text[:50]}...'" if len(text) > 50 else f"开始处理写作请求: '{text}'")
+        start_time = time.time()
+        
+        # 调用写作工具
+        response = call_mcp_service("写作工具", {"text": text})
+        
+        # 记录调用结束
+        elapsed = time.time() - start_time
+        logger.info(f"写作工具调用完成，耗时: {elapsed:.2f}秒")
+        
+        if response["status"] == "error":
+            logger.error(f"写作工具出错: {response['message']}")
+            return {"status": "error", "message": response["message"]}
+        
+        result = response["result"]
+        elapsed_time = response["elapsed_time"]
+        
+        # 解析结果格式
+        try:
+            # 尝试解析结果
+            if isinstance(result, str):
+                if '{' in result and '}' in result:
+                    # 先尝试JSON格式解析
+                    logger.info("尝试解析JSON格式的写作结果")
+                    json_start = result.find('{')
+                    json_end = result.rfind('}') + 1
+                    json_str = result[json_start:json_end]
+                    
+                    try:
+                        data = json.loads(json_str)
+                        writing_content = data.get('writing_content', "")
+                        response_message = data.get('reply_message', "我已根据您的要求完成了文档写作。")
+                        
+                        logger.info(f"成功解析JSON格式的写作结果，内容长度: {len(writing_content)}")
+                        return {
+                            "status": "success",
+                            "writing_content": writing_content,
+                            "response_message": response_message,
+                            "result": result,
+                            "elapsed_time": elapsed_time
+                        }
+                    except json.JSONDecodeError:
+                        logger.warning("JSON解析失败，尝试其他格式")
+                
+                if "写作内容:" in result and "回复消息:" in result:
+                    # 尝试解析常规格式
+                    logger.info("尝试解析常规格式的写作结果")
+                    parts = result.split("回复消息:")
+                    writing_content = parts[0].replace("写作内容:", "").strip()
+                    response_message = parts[1].strip()
+                    
+                    logger.info(f"成功解析常规格式的写作结果，内容长度: {len(writing_content)}")
+                    return {
+                        "status": "success",
+                        "writing_content": writing_content,
+                        "response_message": response_message,
+                        "result": result,
+                        "elapsed_time": elapsed_time
+                    }
+                else:
+                    # 如果不符合预期格式，返回整个内容
+                    logger.warning("未找到预期格式，将整个内容作为写作内容返回")
+                    return {
+                        "status": "success",
+                        "writing_content": result,
+                        "response_message": "我已完成您的写作请求",
+                        "result": result,
+                        "elapsed_time": elapsed_time
+                    }
+            else:
+                # 处理结构化结果
+                logger.warning(f"写作工具返回了非字符串结果: {type(result)}")
+                return {
+                    "status": "success",
+                    "writing_content": str(result),
+                    "response_message": "我已完成您的写作请求",
+                    "result": str(result),
+                    "elapsed_time": elapsed_time
+                }
+        except Exception as parse_error:
+            logger.error(f"解析写作结果时出错: {str(parse_error)}")
+            return {
+                "status": "success",
+                "writing_content": str(result),
+                "response_message": "处理写作结果时出现错误，但已生成内容",
+                "message": f"解析结果出错: {str(parse_error)}",
+                "result": str(result),
+                "elapsed_time": elapsed_time
+            }
+    except Exception as e:
+        logger.error(f"写作工具调用过程中出错: {str(e)}")
+        return {"status": "error", "message": str(e)}
+
 # 测试代码
 if __name__ == "__main__":
     test_text = "我是一只光荣的共产党人"

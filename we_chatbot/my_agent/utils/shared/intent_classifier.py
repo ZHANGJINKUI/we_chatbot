@@ -25,16 +25,24 @@ class IntentClassifier:
             r'(纠错|修正|修改|检查错误).*(刚刚|上一句|前面|之前)'
         ]
         
-        writing_keywords = r'写作|润色|改写|优化'
+        # 写作关键词匹配
+        writing_patterns = [
+            r'(写|写作|撰写).*(文章|报告|公文|通知|申请|总结|汇报|方案|文档)',
+            r'(帮我|请|请帮我|需要|想要|可以).*(写|写作|撰写|编写|生成).*(文章|报告|公文|通知|申请|总结|汇报|方案|文档)',
+            r'(文章|报告|公文|通知|申请|总结|汇报|方案|文档).*(写|写作|撰写|编写|生成)',
+            r'(起草|草拟).*(文章|报告|公文|通知|申请|总结|汇报|方案|文档)',
+            r'写一(篇|份|个).*(文章|报告|公文|通知|申请|总结|汇报|方案|文档)'
+        ]
         
         # 检查是否匹配任何纠错模式
         for pattern in correction_patterns:
             if re.search(pattern, user_input, re.IGNORECASE):
                 return "correction"
                 
-        # 检查是否匹配写作关键词
-        if re.search(writing_keywords, user_input):
-            return "writing"
+        # 检查是否匹配写作模式
+        for pattern in writing_patterns:
+            if re.search(pattern, user_input, re.IGNORECASE):
+                return "writing"
             
         # 默认为聊天意图
         return "chat"
